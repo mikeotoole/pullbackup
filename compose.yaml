@@ -1,0 +1,33 @@
+# Komodo stack — pullback on seal (Unraid)
+# Bind-mount whatever destination roots you want pullback to write into.
+# Each one needs to be listed in PULLBACK_DEST_ROOTS so the FS browser allows it.
+
+services:
+  pullback:
+    image: registry-write.s.lagoon.cloud/lagoon/pullback:0.1.0
+    container_name: pullback
+    restart: unless-stopped
+    ports:
+      - "8742:8000"
+    environment:
+      PULLBACK_DATA_DIR: /data
+      PULLBACK_DEST_ROOTS: /mnt/dest/backups,/mnt/dest/media
+      PULLBACK_MAX_CONCURRENT_RUNS: "4"
+      # Matrix (optional — leave blank to disable the Matrix toggle in UI)
+      MATRIX_HOMESERVER: ""
+      MATRIX_TOKEN: ""
+      MATRIX_ROOM_ID: ""
+      # Uptime Kuma (optional — leave blank to disable the Kuma toggle in UI)
+      UPTIME_KUMA_URL: "https://uptime.lagoon.cloud"
+      UPTIME_KUMA_USERNAME: ""
+      UPTIME_KUMA_PASSWORD: ""
+    volumes:
+      - /mnt/user/appdata/pullback/data:/data
+      - /mnt/user/backups:/mnt/dest/backups
+      # add more destination roots as needed, e.g.:
+      # - /mnt/user/media:/mnt/dest/media
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/system/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

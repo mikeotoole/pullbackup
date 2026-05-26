@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+input, select, textarea {
+  @apply bg-bg border border-border rounded px-3 py-2 text-white;
+}
+
+input:focus, select:focus, textarea:focus {
+  @apply outline-none border-accent;
+}
+
+button {
+  @apply rounded px-3 py-2 text-sm font-medium;
+}
+
+.btn-primary { @apply bg-accent text-white hover:opacity-90; }
+.btn-ghost { @apply bg-transparent border border-border text-white hover:bg-panel; }
+.btn-danger { @apply bg-danger text-white hover:opacity-90; }
