@@ -1,31 +1,38 @@
 # Komodo stack — pullback on seal (Unraid)
-# Bind-mount whatever destination roots you want pullback to write into.
-# Each one needs to be listed in PULLBACK_DEST_ROOTS so the FS browser allows it.
+#
+# The authoritative copy lives inline in Komodo (stack id 6a1640720ef6f7eeafb06b7a).
+# This file is documentation only; secrets are in the Komodo stack's env.
 
 services:
   pullback:
     image: registry-write.s.lagoon.cloud/lagoon/pullback:0.1.0
     container_name: pullback
     restart: unless-stopped
-    ports:
-      - "8742:8000"
     environment:
+      TZ: ${TZ}
       PULLBACK_DATA_DIR: /data
-      PULLBACK_DEST_ROOTS: /mnt/dest/backups,/mnt/dest/media
+      PULLBACK_DEST_ROOTS: /mnt/dest/backups
       PULLBACK_MAX_CONCURRENT_RUNS: "4"
-      # Matrix (optional — leave blank to disable the Matrix toggle in UI)
-      MATRIX_HOMESERVER: ""
-      MATRIX_TOKEN: ""
-      MATRIX_ROOM_ID: ""
-      # Uptime Kuma (optional — leave blank to disable the Kuma toggle in UI)
-      UPTIME_KUMA_URL: "https://uptime.lagoon.cloud"
-      UPTIME_KUMA_USERNAME: ""
-      UPTIME_KUMA_PASSWORD: ""
+      # Matrix (blank = feature disabled in UI)
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER}
+      MATRIX_TOKEN: ${MATRIX_TOKEN}
+      MATRIX_ROOM_ID: ${MATRIX_ROOM_ID}
+      # Uptime Kuma (blank = feature disabled in UI)
+      UPTIME_KUMA_URL: ${UPTIME_KUMA_URL}
+      UPTIME_KUMA_USERNAME: ${UPTIME_KUMA_USERNAME}
+      UPTIME_KUMA_PASSWORD: ${UPTIME_KUMA_PASSWORD}
     volumes:
-      - /mnt/user/appdata/pullback/data:/data
+      - ${DOCKER_VOLUMES}/pullback/data:/data
       - /mnt/user/backups:/mnt/dest/backups
-      # add more destination roots as needed, e.g.:
+      # Add more destination roots as needed, e.g.:
       # - /mnt/user/media:/mnt/dest/media
+      # Then append the in-container path to PULLBACK_DEST_ROOTS.
+    labels:
+      - net.unraid.docker.webui=https://pullback.${HOST_NAME}.${HOST_URL}
+      - traefik.enable=true
+      - traefik.http.routers.pullback.rule=Host(`pullback.${HOST_NAME}.${HOST_URL}`)
+      - traefik.http.routers.pullback.tls=true
+      - traefik.http.services.pullback.loadbalancer.server.port=8000
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/system/health', timeout=3).status==200 else 1)"]
       interval: 30s

@@ -1,5 +1,6 @@
 # --- frontend build ---
-FROM node:20-alpine AS frontend
+# Using mirror.gcr.io to bypass docker.io anonymous pull rate limits.
+FROM mirror.gcr.io/library/node:20-alpine AS frontend
 WORKDIR /fe
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
@@ -7,7 +8,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- backend runtime ---
-FROM python:3.13-slim AS runtime
+FROM mirror.gcr.io/library/python:3.13-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
         rsync openssh-client ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*

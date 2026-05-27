@@ -17,11 +17,11 @@ Pull-only rsync task manager. Web UI like TrueNAS's "Rsync Tasks" but inverted: 
 
 ## Deployment
 
-Built as a single container image (`pullback:<tag>`) and deployed as a Komodo stack pinned to **seal**. Bind-mount the destination roots you want exposed; pullback's filesystem browser is allowlisted to those roots.
+Built as a single container image (`pullback:<tag>`) and deployed as a Komodo stack pinned to **seal**. Traefik-routed at `https://pullback.seal.lagoon.cloud`. Bind-mount the destination roots you want exposed; pullback's filesystem browser is allowlisted to those roots.
 
 ```
 volumes:
-  - /mnt/user/appdata/pullback/data:/data        # sqlite, logs, ssh keys
+  - ${DOCKER_VOLUMES}/pullback/data:/data        # sqlite, logs, ssh keys
   - /mnt/user/backups:/mnt/dest/backups          # destination root
   - /mnt/user/media:/mnt/dest/media              # add more roots as needed
 ```
