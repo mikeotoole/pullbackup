@@ -1,7 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
+import cronstrue from "cronstrue";
 import { api, type Task } from "../lib/api";
+
+function describeCron(cron: string | undefined): { text: string; ok: boolean } {
+  if (!cron) return { text: "", ok: false };
+  try {
+    return { text: cronstrue.toString(cron, { verbose: false }), ok: true };
+  } catch {
+    return { text: "invalid cron expression", ok: false };
+  }
+}
 
 const empty: Partial<Task> = {
   name: "",
@@ -159,9 +169,17 @@ export function TaskForm() {
         </Section>
 
         <Section title="Schedule">
-          <Field label="Cron (UTC)">
+          <Field label={`Cron (${sys?.tz ?? "UTC"})`}>
             <input value={form.cron ?? ""} onChange={e => set("cron", e.target.value)} required placeholder="m h dom mon dow" />
-            <div className="text-xs text-muted mt-1 flex gap-2 flex-wrap">
+            {(() => {
+              const d = describeCron(form.cron);
+              return (
+                <div className={`text-sm mt-1.5 ${d.ok ? "text-accent-hover" : "text-danger"}`}>
+                  {d.text ? `${d.text} (${sys?.tz ?? "UTC"})` : ""}
+                </div>
+              );
+            })()}
+            <div className="text-xs text-muted mt-1 flex gap-2 flex-wrap items-center">
               <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextHourlyCron(allTasks))}>Next free hourly</button>
               <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextDailyCron(allTasks))}>Next free daily</button>
               <span className="text-muted">5-field cron. Suggestions pick a minute/hour no other enabled task uses.</span>

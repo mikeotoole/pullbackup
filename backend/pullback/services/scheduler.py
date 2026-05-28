@@ -4,6 +4,7 @@ from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlmodel import Session, select
+from ..config import settings
 from ..db import engine
 from ..models import Task
 
@@ -18,7 +19,7 @@ def _job_id(task_id: int) -> str:
 def get_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is None:
-        _scheduler = AsyncIOScheduler(timezone="UTC")
+        _scheduler = AsyncIOScheduler(timezone=settings.tzinfo)
     return _scheduler
 
 
@@ -37,7 +38,7 @@ def upsert_job(task: Task) -> None:
     if not task.enabled:
         return
     try:
-        trigger = CronTrigger.from_crontab(task.cron, timezone="UTC")
+        trigger = CronTrigger.from_crontab(task.cron, timezone=settings.tzinfo)
     except Exception as e:
         log.warning("task %s has invalid cron %r: %s", task.id, task.cron, e)
         return
@@ -56,7 +57,7 @@ def start() -> None:
         tasks = session.exec(select(Task).where(Task.enabled == True)).all()  # noqa: E712
         for t in tasks:
             try:
-                trigger = CronTrigger.from_crontab(t.cron, timezone="UTC")
+                trigger = CronTrigger.from_crontab(t.cron, timezone=settings.tzinfo)
                 sched.add_job(_execute, trigger=trigger, args=[t.id], id=_job_id(t.id), replace_existing=True)
             except Exception as e:
                 log.warning("skipping task %s: %s", t.id, e)

@@ -10,7 +10,7 @@ RUN npm run build
 # --- backend runtime ---
 FROM mirror.gcr.io/library/python:3.13-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        rsync openssh-client ca-certificates tini \
+        rsync openssh-client ca-certificates tini tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

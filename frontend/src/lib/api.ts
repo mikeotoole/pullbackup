@@ -59,6 +59,7 @@ export type Run = {
 export type SystemInfo = {
   version: string;
   dest_roots: string[];
+  tz: string;
   matrix_enabled: boolean;
   kuma_enabled: boolean;
 };

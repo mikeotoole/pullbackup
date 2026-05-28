@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +23,17 @@ class Settings(BaseSettings):
     @property
     def dest_roots_list(self) -> list[Path]:
         return [Path(p.strip()) for p in self.dest_roots.split(",") if p.strip()]
+
+    @property
+    def tz_name(self) -> str:
+        return os.environ.get("TZ", "UTC")
+
+    @property
+    def tzinfo(self) -> ZoneInfo:
+        try:
+            return ZoneInfo(self.tz_name)
+        except ZoneInfoNotFoundError:
+            return ZoneInfo("UTC")
 
     @property
     def db_path(self) -> Path:

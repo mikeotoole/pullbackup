@@ -16,6 +16,7 @@ def info():
     return {
         "version": __version__,
         "dest_roots": [str(p) for p in settings.dest_roots_list],
+        "tz": settings.tz_name,
         "matrix_enabled": settings.matrix_enabled,
         "kuma_enabled": settings.kuma_enabled,
     }
