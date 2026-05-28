@@ -52,8 +52,8 @@ export function TasksList() {
         <table className="w-full text-sm">
           <thead className="text-muted text-left">
             <tr className="border-b border-border">
-              <th className="px-4 py-3 font-medium">Path</th>
-              <th className="px-4 py-3 font-medium">Remote Host</th>
+              <th className="px-4 py-3 font-medium">Remote Path</th>
+              <th className="px-4 py-3 font-medium">Source</th>
               <th className="px-4 py-3 font-medium">Frequency</th>
               <th className="px-4 py-3 font-medium">Next Run</th>
               <th className="px-4 py-3 font-medium">Last Run</th>
@@ -70,8 +70,8 @@ export function TasksList() {
               const pill = <StatusPill state={t.last_run_state} />;
               return (
               <tr key={t.id} className="border-b border-border last:border-0">
-                <td className="px-4 py-3 font-mono text-xs">{t.local_path}</td>
-                <td className="px-4 py-3 text-muted text-xs">{sourceById[t.source_id]?.host ?? "—"}</td>
+                <td className="px-4 py-3 font-mono text-xs" title={`local: ${t.local_path}`}>{t.remote_path}</td>
+                <td className="px-4 py-3 text-muted text-xs">{sourceById[t.source_id]?.name ?? "—"}</td>
                 <td className="px-4 py-3 font-mono text-xs">{t.cron}</td>
                 <td className="px-4 py-3 text-muted text-xs">{t.enabled ? relTime(t.next_run) : "Disabled"}</td>
                 <td className="px-4 py-3 text-muted text-xs">{relTime(t.last_run_at)}</td>
