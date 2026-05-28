@@ -38,6 +38,7 @@ export type Task = {
   kuma_monitor_id: number | null;
   kuma_push_token: string | null;
   next_run: string | null;
+  last_run_id: number | null;
   last_run_at: string | null;
   last_run_state: RunState | null;
 };

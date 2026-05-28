@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, type Task } from "../lib/api";
@@ -19,7 +19,7 @@ const empty: Partial<Task> = {
   quiet: false,
   preserve_permissions: false,
   preserve_xattrs: false,
-  delay_updates: true,
+  delay_updates: false,
   bwlimit_kbps: null,
   exclude_patterns: "",
   aux_args: "",
@@ -27,6 +27,39 @@ const empty: Partial<Task> = {
   notify_matrix_on_success: false,
   kuma_enabled: false,
 };
+
+function splitLocalPath(p: string | undefined, roots: string[]): [string, string] {
+  if (!p) return [roots[0] ?? "", ""];
+  const root = roots.find(r => p === r || p.startsWith(r.endsWith("/") ? r : r + "/"));
+  if (!root) return [roots[0] ?? "", p];
+  const rest = p.slice(root.length).replace(/^\/+/, "");
+  return [root, rest];
+}
+
+function nextHourlyCron(tasks: Task[]): string {
+  const used = new Set<number>();
+  for (const t of tasks) {
+    if (!t.enabled) continue;
+    const m = /^(\d+) \* \* \* \*$/.exec(t.cron);
+    if (m) used.add(Number(m[1]));
+  }
+  for (let i = 0; i < 60; i++) if (!used.has(i)) return `${i} * * * *`;
+  return "0 * * * *";
+}
+
+function nextDailyCron(tasks: Task[]): string {
+  const used = new Set<number>();
+  for (const t of tasks) {
+    if (!t.enabled) continue;
+    const m = /^\d+ (\d+) \* \* \*$/.exec(t.cron);
+    if (m) used.add(Number(m[1]));
+  }
+  for (let h = 3; h < 27; h++) {
+    const hh = h % 24;
+    if (!used.has(hh)) return `0 ${hh} * * *`;
+  }
+  return "0 3 * * *";
+}
 
 export function TaskForm() {
   const { id } = useParams();
@@ -37,19 +70,32 @@ export function TaskForm() {
 
   const { data: sources = [] } = useQuery({ queryKey: ["sources"], queryFn: api.listSources });
   const { data: sys } = useQuery({ queryKey: ["sysinfo"], queryFn: api.systemInfo });
+  const { data: allTasks = [] } = useQuery({ queryKey: ["tasks"], queryFn: api.listTasks });
   const { data: existing } = useQuery({
     queryKey: ["task", id],
     queryFn: () => api.getTask(Number(id)),
     enabled: editing,
   });
 
+  const roots = sys?.dest_roots ?? [];
+  const [rootChoice, subdir] = useMemo(() => splitLocalPath(form.local_path, roots), [form.local_path, roots]);
+
   useEffect(() => {
     if (existing) setForm(existing);
     else if (sources.length && !form.source_id) setForm(f => ({ ...f, source_id: sources[0].id }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existing, sources]);
 
   const save = useMutation({
-    mutationFn: () => editing ? api.updateTask(Number(id), form) : api.createTask(form),
+    mutationFn: () => {
+      // Re-validate that local_path is rooted under a known root before submit
+      const lp = (form.local_path ?? "").trim();
+      const rootMatch = roots.some(r => lp === r || lp.startsWith(r.endsWith("/") ? r : r + "/"));
+      if (!rootMatch || lp === rootChoice) {
+        throw new Error("Local path must include a subdirectory beneath the chosen root.");
+      }
+      return editing ? api.updateTask(Number(id), form) : api.createTask(form);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["tasks"] });
       nav("/tasks");
@@ -57,6 +103,11 @@ export function TaskForm() {
   });
 
   const set = <K extends keyof Task>(k: K, v: Task[K]) => setForm(f => ({ ...f, [k]: v }));
+
+  const setLocalParts = (root: string, sub: string) => {
+    const clean = sub.replace(/^\/+/, "");
+    set("local_path", clean ? `${root.replace(/\/+$/, "")}/${clean}` : root);
+  };
 
   return (
     <form
@@ -70,6 +121,7 @@ export function TaskForm() {
           <button type="submit" className="btn-primary" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</button>
         </div>
       </div>
+      {save.error && <div className="bg-danger/20 border border-danger text-danger px-3 py-2 rounded text-sm">{String((save.error as Error).message)}</div>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Section title="Source">
@@ -86,8 +138,20 @@ export function TaskForm() {
             <input value={form.remote_path ?? ""} onChange={e => set("remote_path", e.target.value)} required placeholder="/mnt/pool0/dataset" />
           </Field>
           <Field label="Local path">
-            <input value={form.local_path ?? ""} onChange={e => set("local_path", e.target.value)} required placeholder={`e.g. ${sys?.dest_roots?.[0] ?? "/mnt/dest/backups"}/foo`} />
-            {sys?.dest_roots && <div className="text-xs text-muted mt-1">Allowed roots: {sys.dest_roots.join(", ")}</div>}
+            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,2fr)] gap-2 items-center">
+              <select value={rootChoice} onChange={e => setLocalParts(e.target.value, subdir)}>
+                {roots.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+              <span className="text-muted">/</span>
+              <input
+                value={subdir}
+                onChange={e => setLocalParts(rootChoice, e.target.value)}
+                required
+                placeholder="subdir/path (required)"
+                pattern="[^\s].*"
+              />
+            </div>
+            <div className="text-xs text-muted mt-1">Resolves to: <span className="font-mono">{form.local_path || "—"}</span></div>
           </Field>
           <Field label="Description">
             <textarea rows={2} value={form.description ?? ""} onChange={e => set("description", e.target.value)} />
@@ -97,7 +161,11 @@ export function TaskForm() {
         <Section title="Schedule">
           <Field label="Cron (UTC)">
             <input value={form.cron ?? ""} onChange={e => set("cron", e.target.value)} required placeholder="m h dom mon dow" />
-            <div className="text-xs text-muted mt-1">5-field cron. Examples: <code>0 3 * * *</code> daily 03:00 · <code>*/15 * * * *</code> every 15 min</div>
+            <div className="text-xs text-muted mt-1 flex gap-2 flex-wrap">
+              <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextHourlyCron(allTasks))}>Next free hourly</button>
+              <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextDailyCron(allTasks))}>Next free daily</button>
+              <span className="text-muted">5-field cron. Suggestions pick a minute/hour no other enabled task uses.</span>
+            </div>
           </Field>
           <Checkbox label="Enabled" checked={!!form.enabled} onChange={v => set("enabled", v)} />
         </Section>
@@ -121,7 +189,7 @@ export function TaskForm() {
             <textarea rows={3} value={form.exclude_patterns ?? ""} onChange={e => set("exclude_patterns", e.target.value)} />
           </Field>
           <Field label="Auxiliary args (raw)">
-            <input value={form.aux_args ?? ""} onChange={e => set("aux_args", e.target.value)} placeholder="--prune-empty-dirs" />
+            <input value={form.aux_args ?? ""} onChange={e => set("aux_args", e.target.value)} placeholder="--rsync-path='sudo /usr/bin/rsync'" />
           </Field>
         </Section>
 

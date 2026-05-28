@@ -44,6 +44,7 @@ class TaskOut(TaskIn):
     kuma_monitor_id: Optional[int] = None
     kuma_push_token: Optional[str] = None
     next_run: Optional[str] = None
+    last_run_id: Optional[int] = None
     last_run_at: Optional[datetime] = None
     last_run_state: Optional[RunState] = None
 
@@ -58,6 +59,7 @@ def _to_out(t: Task, session: Session) -> TaskOut:
         kuma_monitor_id=t.kuma_monitor_id,
         kuma_push_token=t.kuma_push_token,
         next_run=scheduler.next_run_iso(t),
+        last_run_id=last.id if last else None,
         last_run_at=last.started_at if last else None,
         last_run_state=last.state if last else None,
     )

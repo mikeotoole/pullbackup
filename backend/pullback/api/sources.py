@@ -32,7 +32,7 @@ def _to_out(s: Source, task_count: int) -> SourceOut:
 def list_sources(session: Session = Depends(get_session)):
     rows = session.exec(select(Source)).all()
     counts: dict[int, int] = {}
-    for src_id, in session.exec(select(Task.source_id)).all():
+    for src_id in session.exec(select(Task.source_id)).all():
         counts[src_id] = counts.get(src_id, 0) + 1
     return [_to_out(s, counts.get(s.id, 0)) for s in rows]
 

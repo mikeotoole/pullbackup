@@ -17,7 +17,12 @@ function relTime(iso: string | null) {
 
 export function TasksList() {
   const qc = useQueryClient();
-  const { data: tasks = [] } = useQuery({ queryKey: ["tasks"], queryFn: api.listTasks });
+  const { data: tasks = [] } = useQuery({
+    queryKey: ["tasks"],
+    queryFn: api.listTasks,
+    // Poll fast when anything is running, so success/failure shows up without manual refresh
+    refetchInterval: (q) => (q.state.data?.some(t => t.last_run_state === "running") ? 2000 : false),
+  });
   const { data: sources = [] } = useQuery({ queryKey: ["sources"], queryFn: api.listSources });
   const sourceById = Object.fromEntries(sources.map(s => [s.id, s] as const));
 
@@ -27,7 +32,10 @@ export function TasksList() {
   });
   const runNow = useMutation({
     mutationFn: (id: number) => api.runTask(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
+    onSuccess: () => {
+      // Refetch immediately so the row flips to "running"
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+    },
   });
   const del = useMutation({
     mutationFn: (id: number) => api.deleteTask(id),
@@ -51,14 +59,16 @@ export function TasksList() {
               <th className="px-4 py-3 font-medium">Last Run</th>
               <th className="px-4 py-3 font-medium">Enabled</th>
               <th className="px-4 py-3 font-medium">State</th>
-              <th className="px-4 py-3 font-medium w-32"></th>
+              <th className="px-4 py-3 font-medium whitespace-nowrap w-36 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             {tasks.length === 0 && (
               <tr><td colSpan={8} className="px-4 py-8 text-center text-muted">No tasks yet. Add one to get started.</td></tr>
             )}
-            {tasks.map(t => (
+            {tasks.map(t => {
+              const pill = <StatusPill state={t.last_run_state} />;
+              return (
               <tr key={t.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-mono text-xs">{t.local_path}</td>
                 <td className="px-4 py-3 text-muted text-xs">{sourceById[t.source_id]?.host ?? "—"}</td>
@@ -66,14 +76,18 @@ export function TasksList() {
                 <td className="px-4 py-3 text-muted text-xs">{t.enabled ? relTime(t.next_run) : "Disabled"}</td>
                 <td className="px-4 py-3 text-muted text-xs">{relTime(t.last_run_at)}</td>
                 <td className="px-4 py-3"><Toggle checked={t.enabled} onChange={() => toggle.mutate(t)} /></td>
-                <td className="px-4 py-3"><StatusPill state={t.last_run_state} /></td>
-                <td className="px-4 py-3 text-right space-x-2">
-                  <Link to={`/tasks/${t.id}/edit`} title="Edit" className="text-muted hover:text-white">✎</Link>
-                  <button title="Run now" onClick={() => runNow.mutate(t.id)} className="text-muted hover:text-white">▶</button>
-                  <button title="Delete" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="text-muted hover:text-danger">🗑</button>
+                <td className="px-4 py-3">
+                  {t.last_run_id ? (
+                    <Link to={`/runs/${t.last_run_id}`} title="View last run">{pill}</Link>
+                  ) : pill}
+                </td>
+                <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <Link to={`/tasks/${t.id}/edit`} title="Edit" className="inline-block w-7 text-center text-muted hover:text-white">✎</Link>
+                  <button title="Run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white">▶</button>
+                  <button title="Delete" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-danger">🗑</button>
                 </td>
               </tr>
-            ))}
+            )})}
           </tbody>
         </table>
       </div>

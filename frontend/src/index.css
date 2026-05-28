@@ -15,9 +15,9 @@ input:focus, select:focus, textarea:focus {
 }
 
 button {
-  @apply rounded px-3 py-2 text-sm font-medium;
+  @apply text-sm font-medium;
 }
 
-.btn-primary { @apply bg-accent text-white hover:opacity-90; }
-.btn-ghost { @apply bg-transparent border border-border text-white hover:bg-panel; }
-.btn-danger { @apply bg-danger text-white hover:opacity-90; }
+.btn-primary { @apply inline-flex items-center gap-1.5 rounded px-4 py-2 bg-accent text-white hover:bg-accent-hover transition-colors; }
+.btn-ghost { @apply inline-flex items-center gap-1.5 rounded px-4 py-2 bg-transparent border border-border text-white hover:bg-panel transition-colors; }
+.btn-danger { @apply inline-flex items-center gap-1.5 rounded px-4 py-2 bg-danger text-white hover:opacity-90 transition-colors; }
