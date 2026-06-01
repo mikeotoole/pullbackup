@@ -19,6 +19,7 @@ def info():
         "tz": settings.tz_name,
         "matrix_enabled": settings.matrix_enabled,
         "kuma_enabled": settings.kuma_enabled,
+        "kuma_url": settings.uptime_kuma_url,
     }
 
 

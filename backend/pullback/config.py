@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     uptime_kuma_url: str = ""
     uptime_kuma_username: str = ""
     uptime_kuma_password: str = ""
+    kuma_group_id: int | None = None  # parent group for created push monitors (PULLBACK_KUMA_GROUP_ID)
 
     @property
     def dest_roots_list(self) -> list[Path]:

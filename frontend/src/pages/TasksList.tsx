@@ -24,6 +24,7 @@ export function TasksList() {
     refetchInterval: (q) => (q.state.data?.some(t => t.last_run_state === "running") ? 2000 : false),
   });
   const { data: sources = [] } = useQuery({ queryKey: ["sources"], queryFn: api.listSources });
+  const { data: sys } = useQuery({ queryKey: ["sysinfo"], queryFn: api.systemInfo });
   const sourceById = Object.fromEntries(sources.map(s => [s.id, s] as const));
 
   const toggle = useMutation({
@@ -84,6 +85,9 @@ export function TasksList() {
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <Link to={`/tasks/${t.id}/edit`} title="Edit" className="inline-block w-7 text-center text-muted hover:text-white">✎</Link>
                   <Link to="/tasks/new" state={{ clone: t }} title="Clone (opens an unsaved copy)" className="inline-block w-7 text-center text-muted hover:text-white">⧉</Link>
+                  {t.kuma_monitor_id && sys?.kuma_url && (
+                    <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" className="inline-block w-7 text-center text-muted hover:text-white">🔔</a>
+                  )}
                   <button title="Run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white">▶</button>
                   <button title="Delete" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-danger">🗑</button>
                 </td>

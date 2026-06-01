@@ -55,7 +55,12 @@ class KumaClient:
             "retryInterval": 60,
             "notificationIDList": {},
             "active": True,
+            # Kuma v2 server does conditions.every(...) on add — without this it throws
+            # "Cannot read properties of undefined (reading 'every')". Must be a JSON string.
+            "conditions": "[]",
         }
+        if settings.kuma_group_id:
+            payload["parent"] = settings.kuma_group_id  # nest under the "pullback" group
         res = await self._call("add", payload)
         if not res or not res.get("ok"):
             raise RuntimeError(f"kuma add failed: {res}")
@@ -69,6 +74,8 @@ class KumaClient:
         info = await self._call("getMonitor", monitor_id)
         mon = info.get("monitor") or {}
         mon["interval"] = max(interval_s, 60)
+        if not mon.get("conditions"):
+            mon["conditions"] = "[]"  # see create_push_monitor — editMonitor needs it too on v2
         await self._call("editMonitor", mon)
 
     async def set_active(self, monitor_id: int, active: bool) -> None:

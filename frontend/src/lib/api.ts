@@ -63,6 +63,7 @@ export type SystemInfo = {
   tz: string;
   matrix_enabled: boolean;
   kuma_enabled: boolean;
+  kuma_url: string;
 };
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
