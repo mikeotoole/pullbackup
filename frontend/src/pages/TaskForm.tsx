@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import cronstrue from "cronstrue";
 import { api, type Task } from "../lib/api";
 
@@ -30,6 +30,7 @@ const empty: Partial<Task> = {
   preserve_permissions: false,
   preserve_xattrs: false,
   delay_updates: false,
+  use_sudo: false,
   bwlimit_kbps: null,
   exclude_patterns: "",
   aux_args: "",
@@ -76,7 +77,11 @@ export function TaskForm() {
   const editing = !!id;
   const nav = useNavigate();
   const qc = useQueryClient();
-  const [form, setForm] = useState<Partial<Task>>(empty);
+  // Clone: the list passes a task via router state to /tasks/new → start as an unsaved copy.
+  const cloneFrom = (useLocation().state as { clone?: Task } | null)?.clone;
+  const [form, setForm] = useState<Partial<Task>>(() =>
+    cloneFrom ? { ...cloneFrom, id: undefined, name: `${cloneFrom.name} copy` } : empty
+  );
 
   const { data: sources = [] } = useQuery({ queryKey: ["sources"], queryFn: api.listSources });
   const { data: sys } = useQuery({ queryKey: ["sysinfo"], queryFn: api.systemInfo });
@@ -200,6 +205,7 @@ export function TaskForm() {
           <Checkbox label="Delete extraneous on destination (--delete)" checked={!!form.delete} onChange={v => set("delete", v)} />
           <Checkbox label="Quiet (-q)" checked={!!form.quiet} onChange={v => set("quiet", v)} />
           <Checkbox label="Delay updates (--delay-updates)" checked={!!form.delay_updates} onChange={v => set("delay_updates", v)} />
+          <Checkbox label="Use sudo on remote (read root-owned files)" checked={!!form.use_sudo} onChange={v => set("use_sudo", v)} />
           <Field label="Bandwidth limit (KB/s)">
             <input type="number" value={form.bwlimit_kbps ?? ""} onChange={e => set("bwlimit_kbps", e.target.value ? Number(e.target.value) : null)} />
           </Field>

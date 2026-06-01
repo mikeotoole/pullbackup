@@ -31,6 +31,7 @@ class TaskIn(BaseModel):
     preserve_permissions: bool = False
     preserve_xattrs: bool = False
     delay_updates: bool = True
+    use_sudo: bool = False
     bwlimit_kbps: Optional[int] = None
     exclude_patterns: str = ""
     aux_args: str = ""

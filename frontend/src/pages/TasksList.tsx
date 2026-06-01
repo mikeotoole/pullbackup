@@ -83,6 +83,7 @@ export function TasksList() {
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <Link to={`/tasks/${t.id}/edit`} title="Edit" className="inline-block w-7 text-center text-muted hover:text-white">✎</Link>
+                  <Link to="/tasks/new" state={{ clone: t }} title="Clone (opens an unsaved copy)" className="inline-block w-7 text-center text-muted hover:text-white">⧉</Link>
                   <button title="Run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white">▶</button>
                   <button title="Delete" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-danger">🗑</button>
                 </td>

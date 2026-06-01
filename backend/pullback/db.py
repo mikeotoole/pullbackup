@@ -16,6 +16,22 @@ def init_db() -> None:
     # importing models for side-effect (SQLModel.metadata registration)
     from . import models  # noqa: F401
     SQLModel.metadata.create_all(engine)
+    # lightweight additive migrations (create_all won't ALTER existing tables)
+    _ensure_columns()
+
+
+def _ensure_columns() -> None:
+    """Add new nullable/defaulted columns to existing SQLite tables."""
+    wanted = {
+        "task": [("use_sudo", "BOOLEAN NOT NULL DEFAULT 0")],
+    }
+    with engine.connect() as conn:
+        for table, cols in wanted.items():
+            existing = {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+            for name, ddl in cols:
+                if name not in existing:
+                    conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+        conn.commit()
 
 
 def get_session():

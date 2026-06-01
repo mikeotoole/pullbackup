@@ -49,6 +49,7 @@ class Task(SQLModel, table=True):
     preserve_permissions: bool = False
     preserve_xattrs: bool = False
     delay_updates: bool = True
+    use_sudo: bool = False  # run remote rsync via `sudo /usr/bin/rsync` to read root-owned files
     bwlimit_kbps: Optional[int] = None
     exclude_patterns: str = ""  # newline-delimited
     aux_args: str = ""  # raw extra args, space-split

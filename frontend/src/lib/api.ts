@@ -29,6 +29,7 @@ export type Task = {
   preserve_permissions: boolean;
   preserve_xattrs: boolean;
   delay_updates: boolean;
+  use_sudo: boolean;
   bwlimit_kbps: number | null;
   exclude_patterns: string;
   aux_args: string;

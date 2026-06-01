@@ -50,6 +50,11 @@ def build_rsync_args(task: Task, source: Source) -> list[str]:
         line = line.strip()
         if line:
             args.append(f"--exclude={line}")
+    if task.use_sudo:
+        # run the remote rsync as root (reads root/other-owned files). Single argv element — the
+        # space inside the value is fine since we exec directly (no shell). Requires the remote user
+        # to have NOPASSWD sudo for /usr/bin/rsync.
+        args.append("--rsync-path=sudo /usr/bin/rsync")
     if task.aux_args.strip():
         args.extend(task.aux_args.split())
 
