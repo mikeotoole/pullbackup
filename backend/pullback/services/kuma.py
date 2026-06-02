@@ -5,11 +5,20 @@ We open a short-lived connection per operation; this is not high-throughput.
 """
 import asyncio
 import logging
+import secrets
+import string
 from typing import Optional
 from croniter import croniter
 from datetime import datetime, timezone
 import socketio
 from ..config import settings
+
+
+def _gen_push_token(n: int = 32) -> str:
+    """Kuma push tokens are 32-char alphanumeric. The server does NOT generate one
+    when a push monitor is created over Socket.IO `add` — we mint it ourselves and
+    set it via editMonitor (which Kuma accepts and stores)."""
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(n))
 
 log = logging.getLogger(__name__)
 
@@ -55,9 +64,11 @@ class KumaClient:
             "retryInterval": 60,
             "notificationIDList": {},
             "active": True,
-            # Kuma v2 server does conditions.every(...) on add — without this it throws
-            # "Cannot read properties of undefined (reading 'every')". Must be a JSON string.
+            # Kuma v2 server validates BOTH of these on add — without them it throws
+            # "Cannot read properties of undefined (reading 'every')" (it does .every() on
+            # each). conditions must be a JSON string; accepted_statuscodes a list.
             "conditions": "[]",
+            "accepted_statuscodes": ["200-299"],
         }
         if settings.kuma_group_id:
             payload["parent"] = settings.kuma_group_id  # nest under the "pullback" group
@@ -65,17 +76,26 @@ class KumaClient:
         if not res or not res.get("ok"):
             raise RuntimeError(f"kuma add failed: {res}")
         monitor_id = res["monitorID"]
-        # fetch the monitor back to grab the pushToken
+        # Kuma does NOT auto-generate a pushToken on add — mint one and write it back via
+        # editMonitor (re-asserting conditions/statuscodes so the edit validates too).
+        token = _gen_push_token()
         info = await self._call("getMonitor", monitor_id)
-        token = info.get("monitor", {}).get("pushToken", "")
+        mon = info.get("monitor") or {}
+        mon["pushToken"] = token
+        mon["conditions"] = mon.get("conditions") or "[]"
+        mon["accepted_statuscodes"] = mon.get("accepted_statuscodes") or ["200-299"]
+        edit = await self._call("editMonitor", mon)
+        if not edit or not edit.get("ok"):
+            raise RuntimeError(f"kuma editMonitor (set pushToken) failed: {edit}")
         return monitor_id, token
 
     async def update_interval(self, monitor_id: int, interval_s: int) -> None:
         info = await self._call("getMonitor", monitor_id)
         mon = info.get("monitor") or {}
         mon["interval"] = max(interval_s, 60)
-        if not mon.get("conditions"):
-            mon["conditions"] = "[]"  # see create_push_monitor — editMonitor needs it too on v2
+        # editMonitor validates these the same way add does — re-assert if missing.
+        mon["conditions"] = mon.get("conditions") or "[]"
+        mon["accepted_statuscodes"] = mon.get("accepted_statuscodes") or ["200-299"]
         await self._call("editMonitor", mon)
 
     async def set_active(self, monitor_id: int, active: bool) -> None:
