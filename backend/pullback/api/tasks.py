@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlmodel import Session, select
+from ..config import settings
 from ..db import get_session
 from ..models import Task, Run, RunState, Source, utcnow
 from ..services import scheduler, kuma
@@ -122,6 +123,17 @@ async def delete_task(task_id: int, session: Session = Depends(get_session)):
         except Exception as e:
             log.warning("kuma delete failed: %s", e)
     scheduler.remove_job(task_id)
+    # Delete child runs first: Run.task_id is NOT NULL with no ORM cascade, so deleting the
+    # parent task alone would try to NULL the FK and raise IntegrityError (the silent-500 that
+    # made the UI "do nothing"). Also clean up each run's on-disk log.
+    runs = session.exec(select(Run).where(Run.task_id == task_id)).all()
+    for r in runs:
+        if r.log_filename:
+            try:
+                (settings.log_dir / r.log_filename).unlink(missing_ok=True)
+            except Exception as e:
+                log.warning("run log unlink failed for %s: %s", r.log_filename, e)
+        session.delete(r)
     session.delete(t)
     session.commit()
 

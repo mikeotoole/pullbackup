@@ -41,6 +41,7 @@ export function TasksList() {
   const del = useMutation({
     mutationFn: (id: number) => api.deleteTask(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
+    onError: (e) => alert(`Delete failed: ${String((e as Error).message)}`),
   });
 
   return (

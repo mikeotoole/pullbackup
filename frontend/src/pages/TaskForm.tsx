@@ -106,8 +106,8 @@ export function TaskForm() {
       // Re-validate that local_path is rooted under a known root before submit
       const lp = (form.local_path ?? "").trim();
       const rootMatch = roots.some(r => lp === r || lp.startsWith(r.endsWith("/") ? r : r + "/"));
-      if (!rootMatch || lp === rootChoice) {
-        throw new Error("Local path must include a subdirectory beneath the chosen root.");
+      if (!rootMatch) {
+        throw new Error("Local path must be beneath one of the configured destination roots.");
       }
       return editing ? api.updateTask(Number(id), form) : api.createTask(form);
     },
@@ -161,9 +161,7 @@ export function TaskForm() {
               <input
                 value={subdir}
                 onChange={e => setLocalParts(rootChoice, e.target.value)}
-                required
-                placeholder="subdir/path (required)"
-                pattern="[^\s].*"
+                placeholder="subdir/path (optional)"
               />
             </div>
             <div className="text-xs text-muted mt-1">Resolves to: <span className="font-mono">{form.local_path || "—"}</span></div>
