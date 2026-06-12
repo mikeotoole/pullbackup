@@ -21,9 +21,18 @@ services:
       UPTIME_KUMA_URL: ${UPTIME_KUMA_URL}
       UPTIME_KUMA_USERNAME: ${UPTIME_KUMA_USERNAME}
       UPTIME_KUMA_PASSWORD: ${UPTIME_KUMA_PASSWORD}
+    # syncoid tasks need ZFS: /dev/zfs + privileges to send/receive/list/destroy on the host pools.
+    # (rsync tasks don't need any of this — it's only for task_type=syncoid.)
+    privileged: true
+    devices:
+      - /dev/zfs:/dev/zfs
     volumes:
       - ${DOCKER_VOLUMES}/pullback/data:/data
       - /mnt/user/backups:/mnt/dest/backups
+      # syncoid receive targets live in the cache pool; rshared so zfs mounts propagate to the host
+      - /mnt/cache:/mnt/cache:rshared
+      # syncoid SSH key (host root's key the existing user-script uses)
+      - /root/.ssh/id_syncoid:/keys/id_syncoid:ro
       # Add more destination roots as needed, e.g.:
       # - /mnt/user/media:/mnt/dest/media
       # Then append the in-container path to PULLBACK_DEST_ROOTS.

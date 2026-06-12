@@ -20,6 +20,12 @@ export type Task = {
   cron: string;
   enabled: boolean;
   description: string;
+  task_type: string;
+  syncoid_recursive: boolean;
+  syncoid_no_sync_snap: boolean;
+  syncoid_compress: string;
+  syncoid_extra_args: string;
+  prune_keep_hourly: number | null;
   archive: boolean;
   recursive: boolean;
   times: boolean;

@@ -23,7 +23,15 @@ def init_db() -> None:
 def _ensure_columns() -> None:
     """Add new nullable/defaulted columns to existing SQLite tables."""
     wanted = {
-        "task": [("use_sudo", "BOOLEAN NOT NULL DEFAULT 0")],
+        "task": [
+            ("use_sudo", "BOOLEAN NOT NULL DEFAULT 0"),
+            ("task_type", "VARCHAR NOT NULL DEFAULT 'rsync'"),
+            ("syncoid_recursive", "BOOLEAN NOT NULL DEFAULT 1"),
+            ("syncoid_no_sync_snap", "BOOLEAN NOT NULL DEFAULT 1"),
+            ("syncoid_compress", "VARCHAR NOT NULL DEFAULT ''"),
+            ("syncoid_extra_args", "VARCHAR NOT NULL DEFAULT ''"),
+            ("prune_keep_hourly", "INTEGER"),
+        ],
     }
     with engine.connect() as conn:
         for table, cols in wanted.items():

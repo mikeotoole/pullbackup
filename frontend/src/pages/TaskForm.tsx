@@ -21,6 +21,12 @@ const empty: Partial<Task> = {
   cron: "0 3 * * *",
   enabled: true,
   description: "",
+  task_type: "rsync",
+  syncoid_recursive: true,
+  syncoid_no_sync_snap: true,
+  syncoid_compress: "",
+  syncoid_extra_args: "",
+  prune_keep_hourly: null,
   archive: true,
   recursive: true,
   times: true,
@@ -94,6 +100,7 @@ export function TaskForm() {
 
   const roots = sys?.dest_roots ?? [];
   const [rootChoice, subdir] = useMemo(() => splitLocalPath(form.local_path, roots), [form.local_path, roots]);
+  const isSyncoid = form.task_type === "syncoid";
 
   useEffect(() => {
     if (existing) setForm(existing);
@@ -103,11 +110,13 @@ export function TaskForm() {
 
   const save = useMutation({
     mutationFn: () => {
-      // Re-validate that local_path is rooted under a known root before submit
-      const lp = (form.local_path ?? "").trim();
-      const rootMatch = roots.some(r => lp === r || lp.startsWith(r.endsWith("/") ? r : r + "/"));
-      if (!rootMatch) {
-        throw new Error("Local path must be beneath one of the configured destination roots.");
+      // rsync: local_path must be under a configured dest root. syncoid: it's a ZFS dataset name.
+      if (!isSyncoid) {
+        const lp = (form.local_path ?? "").trim();
+        const rootMatch = roots.some(r => lp === r || lp.startsWith(r.endsWith("/") ? r : r + "/"));
+        if (!rootMatch) {
+          throw new Error("Local path must be beneath one of the configured destination roots.");
+        }
       }
       return editing ? api.updateTask(Number(id), form) : api.createTask(form);
     },
@@ -140,6 +149,12 @@ export function TaskForm() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Section title="Source">
+          <Field label="Type">
+            <select value={form.task_type ?? "rsync"} onChange={e => set("task_type", e.target.value)}>
+              <option value="rsync">rsync (files)</option>
+              <option value="syncoid">syncoid (ZFS replication)</option>
+            </select>
+          </Field>
           <Field label="Name">
             <input value={form.name ?? ""} onChange={e => set("name", e.target.value)} required />
           </Field>
@@ -149,23 +164,30 @@ export function TaskForm() {
               {sources.map(s => <option key={s.id} value={s.id}>{s.name} ({s.user}@{s.host})</option>)}
             </select>
           </Field>
-          <Field label="Remote path">
-            <input value={form.remote_path ?? ""} onChange={e => set("remote_path", e.target.value)} required placeholder="/mnt/pool0/dataset" />
+          <Field label={isSyncoid ? "Remote dataset" : "Remote path"}>
+            <input value={form.remote_path ?? ""} onChange={e => set("remote_path", e.target.value)} required placeholder={isSyncoid ? "pool0/docker/eel" : "/mnt/pool0/dataset"} />
           </Field>
-          <Field label="Local path">
-            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,2fr)] gap-2 items-center">
-              <select value={rootChoice} onChange={e => setLocalParts(e.target.value, subdir)}>
-                {roots.map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
-              <span className="text-muted">/</span>
-              <input
-                value={subdir}
-                onChange={e => setLocalParts(rootChoice, e.target.value)}
-                placeholder="subdir/path (optional)"
-              />
-            </div>
-            <div className="text-xs text-muted mt-1">Resolves to: <span className="font-mono">{form.local_path || "—"}</span></div>
-          </Field>
+          {isSyncoid ? (
+            <Field label="Local dataset">
+              <input value={form.local_path ?? ""} onChange={e => set("local_path", e.target.value)} required placeholder="cache/docker_remote/eel" />
+              <div className="text-xs text-muted mt-1">Local ZFS dataset name (no <span className="font-mono">/mnt</span>, no leading slash). <span className="font-mono">zfs receive</span> creates it.</div>
+            </Field>
+          ) : (
+            <Field label="Local path">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,2fr)] gap-2 items-center">
+                <select value={rootChoice} onChange={e => setLocalParts(e.target.value, subdir)}>
+                  {roots.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <span className="text-muted">/</span>
+                <input
+                  value={subdir}
+                  onChange={e => setLocalParts(rootChoice, e.target.value)}
+                  placeholder="subdir/path (optional)"
+                />
+              </div>
+              <div className="text-xs text-muted mt-1">Resolves to: <span className="font-mono">{form.local_path || "—"}</span></div>
+            </Field>
+          )}
           <Field label="Description">
             <textarea rows={2} value={form.description ?? ""} onChange={e => set("description", e.target.value)} />
           </Field>
@@ -191,7 +213,27 @@ export function TaskForm() {
           <Checkbox label="Enabled" checked={!!form.enabled} onChange={v => set("enabled", v)} />
         </Section>
 
-        <Section title="Rsync options">
+        <Section title={isSyncoid ? "Syncoid options" : "Rsync options"}>
+          {isSyncoid && <>
+            <Checkbox label="Recursive (--recursive)" checked={!!form.syncoid_recursive} onChange={v => set("syncoid_recursive", v)} />
+            <Checkbox label="No sync snapshot (--no-sync-snap)" checked={!!form.syncoid_no_sync_snap} onChange={v => set("syncoid_no_sync_snap", v)} />
+            <Field label="Compression (--compress)">
+              <select value={form.syncoid_compress ?? ""} onChange={e => set("syncoid_compress", e.target.value)}>
+                <option value="">default</option>
+                <option value="none">none</option>
+                <option value="lz4">lz4</option>
+                <option value="zstd-fast">zstd-fast</option>
+                <option value="gzip">gzip</option>
+              </select>
+            </Field>
+            <Field label="Prune: keep N newest hourly snaps on dest (blank = no prune)">
+              <input type="number" value={form.prune_keep_hourly ?? ""} onChange={e => set("prune_keep_hourly", e.target.value ? Number(e.target.value) : null)} placeholder="e.g. 24" />
+            </Field>
+            <Field label="Extra syncoid args (raw)">
+              <input value={form.syncoid_extra_args ?? ""} onChange={e => set("syncoid_extra_args", e.target.value)} placeholder="--no-privilege-elevation --mbuffer-size=128M" />
+            </Field>
+          </>}
+          {!isSyncoid && <>
           <Checkbox label="Archive (-a)" checked={!!form.archive} onChange={v => set("archive", v)} />
           {!form.archive && <>
             <Checkbox label="Recursive (-r)" checked={!!form.recursive} onChange={v => set("recursive", v)} />
@@ -213,6 +255,7 @@ export function TaskForm() {
           <Field label="Auxiliary args (raw)">
             <input value={form.aux_args ?? ""} onChange={e => set("aux_args", e.target.value)} placeholder="--rsync-path='sudo /usr/bin/rsync'" />
           </Field>
+          </>}
         </Section>
 
         <Section title="Notifications">

@@ -39,6 +39,17 @@ class Task(SQLModel, table=True):
     enabled: bool = True
     description: str = ""
 
+    # which engine runs this task. For "syncoid", remote_path/local_path are ZFS
+    # dataset names (e.g. pool0/docker/eel -> cache/docker_remote/eel), not filesystem paths.
+    task_type: str = "rsync"  # "rsync" | "syncoid"
+
+    # syncoid (ZFS replication) options — used only when task_type == "syncoid"
+    syncoid_recursive: bool = True       # --recursive
+    syncoid_no_sync_snap: bool = True    # --no-sync-snap (replicate existing snaps, don't make new)
+    syncoid_compress: str = ""           # "" | none | lz4 | zstd-fast | gzip ... -> --compress
+    syncoid_extra_args: str = ""         # raw extra args, space-split
+    prune_keep_hourly: Optional[int] = None  # keep N newest zfs-auto-snap_hourly snaps on the dst dataset
+
     # rsync flags — names mirror the TrueNAS form
     archive: bool = True
     recursive: bool = True

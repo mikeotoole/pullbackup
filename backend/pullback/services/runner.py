@@ -71,6 +71,53 @@ def build_rsync_args(task: Task, source: Source) -> list[str]:
     return args
 
 
+def build_syncoid_args(task: Task, source: Source) -> list[str]:
+    """syncoid (ZFS replication). remote_path/local_path are ZFS dataset names."""
+    args = ["syncoid"]
+    if task.syncoid_recursive:
+        args.append("--recursive")
+    if task.syncoid_no_sync_snap:
+        args.append("--no-sync-snap")
+    if task.syncoid_compress and task.syncoid_compress != "none":
+        args.append(f"--compress={task.syncoid_compress}")
+    args.append(f"--sshkey={source.ssh_key_path}")
+    if source.port and source.port != 22:
+        args.append(f"--sshport={source.port}")
+    if task.syncoid_extra_args.strip():
+        args.extend(task.syncoid_extra_args.split())
+    src = f"{source.user}@{source.host}:{task.remote_path}"  # remote ZFS dataset
+    args.extend([src, task.local_path])                      # local ZFS dataset
+    return args
+
+
+def build_command(task: Task, source: Source) -> list[str]:
+    if task.task_type == "syncoid":
+        return build_syncoid_args(task, source)
+    return build_rsync_args(task, source)
+
+
+async def _prune_zfs_hourly(dataset: str, keep: int, log_path: Path) -> None:
+    """Keep the N newest zfs-auto-snap_hourly snapshots on `dataset`, destroy older ones.
+    Mirrors the user's syncoid script: anchored to `<dataset>@zfs-auto-snap_hourly-`."""
+    proc = await asyncio.create_subprocess_exec(
+        "zfs", "list", "-H", "-t", "snapshot", "-o", "name", "-s", "creation", "-r", dataset,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    prefix = f"{dataset}@zfs-auto-snap_hourly-"
+    snaps = [ln for ln in out.decode(errors="replace").splitlines() if ln.startswith(prefix)]
+    excess = len(snaps) - keep
+    with open(log_path, "ab") as logf:
+        logf.write(f"\n# prune: {len(snaps)} hourly snaps on {dataset}, keep {keep} -> destroy {max(0, excess)}\n".encode())
+        for s in snaps[: max(0, excess)]:
+            p = await asyncio.create_subprocess_exec(
+                "zfs", "destroy", s, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+            )
+            o, _ = await p.communicate()
+            logf.write(f"destroy {s}: rc={p.returncode} {o.decode(errors='replace').strip()}\n".encode())
+
+
+_SYNCOID_BYTES = re.compile(r"(\d[\d.]*)\s*([KMGT]?)i?B(?:ytes)?\s+(?:sent|received|transferred)", re.I)
 _STATS_FILES = re.compile(r"Number of regular files transferred:\s+([\d,]+)")
 _STATS_BYTES = re.compile(r"Total transferred file size:\s+([\d,]+)\s+bytes")
 
@@ -103,7 +150,7 @@ async def run_task(task_id: int) -> int:
         session.commit()
         session.refresh(run)
         run_id = run.id
-        args = build_rsync_args(task, source)
+        args = build_command(task, source)
         log_path = settings.log_dir / log_filename
 
     async with _global_sem, _source_lock(source.id):
@@ -114,12 +161,15 @@ async def run_task(task_id: int) -> int:
             session.add(run)
             session.commit()
 
-        Path(task.local_path).mkdir(parents=True, exist_ok=True)
+        # rsync writes into a filesystem path (create it); syncoid's target is a ZFS
+        # dataset that `zfs receive` creates itself — don't mkdir it.
+        if task.task_type != "syncoid":
+            Path(task.local_path).mkdir(parents=True, exist_ok=True)
 
         exit_code: Optional[int] = None
         try:
             with open(log_path, "wb") as logf:
-                logf.write(f"# pullback run {run_id}\n# args: {' '.join(args)}\n\n".encode())
+                logf.write(f"# pullback run {run_id} ({task.task_type})\n# args: {' '.join(args)}\n\n".encode())
                 logf.flush()
                 proc = await asyncio.create_subprocess_exec(
                     *args, stdout=logf, stderr=asyncio.subprocess.STDOUT
@@ -129,6 +179,14 @@ async def run_task(task_id: int) -> int:
             with open(log_path, "ab") as logf:
                 logf.write(f"\n# runner error: {e}\n".encode())
             exit_code = -1
+
+        # syncoid: optional snapshot prune on the destination dataset after a clean run
+        if task.task_type == "syncoid" and exit_code == 0 and task.prune_keep_hourly:
+            try:
+                await _prune_zfs_hourly(task.local_path, task.prune_keep_hourly, log_path)
+            except Exception as e:
+                with open(log_path, "ab") as logf:
+                    logf.write(f"\n# prune error: {e}\n".encode())
 
         log_text = log_path.read_text(errors="replace") if log_path.exists() else ""
         files, bytes_ = _parse_stats(log_text)

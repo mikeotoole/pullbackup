@@ -23,6 +23,12 @@ class TaskIn(BaseModel):
     cron: str
     enabled: bool = True
     description: str = ""
+    task_type: str = "rsync"
+    syncoid_recursive: bool = True
+    syncoid_no_sync_snap: bool = True
+    syncoid_compress: str = ""
+    syncoid_extra_args: str = ""
+    prune_keep_hourly: Optional[int] = None
     archive: bool = True
     recursive: bool = True
     times: bool = True
