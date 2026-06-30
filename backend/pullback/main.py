@@ -33,8 +33,20 @@ _static_dir = Path(__file__).resolve().parent.parent / "static"
 if _static_dir.exists():
     app.mount("/assets", StaticFiles(directory=_static_dir / "assets"), name="assets")
 
+    _static_root = _static_dir.resolve()
+
     @app.get("/{full_path:path}")
     async def spa(full_path: str):
+        # Serve a real file at the web root (favicon.svg, robots.txt, manifest…)
+        # before falling back to the SPA index. Without this the catch-all returns
+        # index.html for /favicon.svg, so the icon never loads.
+        if full_path:
+            try:
+                candidate = (_static_dir / full_path).resolve()
+                if candidate.is_file() and _static_root in candidate.parents:
+                    return FileResponse(candidate)
+            except (OSError, ValueError):
+                pass
         index = _static_dir / "index.html"
         if index.exists():
             return FileResponse(index)

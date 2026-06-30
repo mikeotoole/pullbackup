@@ -5,7 +5,7 @@
 
 services:
   pullback:
-    image: registry-write.s.lagoon.cloud/lagoon/pullback:0.9.0
+    image: registry-write.s.lagoon.cloud/lagoon/pullback:0.9.1
     container_name: pullback
     restart: unless-stopped
     environment:

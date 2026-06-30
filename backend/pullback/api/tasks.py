@@ -149,6 +149,15 @@ async def delete_task(task_id: int, session: Session = Depends(get_session)):
 async def run_now(task_id: int, bg: BackgroundTasks, session: Session = Depends(get_session)):
     if not session.get(Task, task_id):
         raise HTTPException(404)
+    # Don't pile up redundant runs. ZFS tasks sharing a source serialize behind a
+    # long replication, so clicking Run repeatedly used to queue several identical
+    # runs that all execute later. Refuse if one is already pending/running.
+    active = session.exec(
+        select(Run).where(Run.task_id == task_id,
+                          Run.state.in_([RunState.pending, RunState.running]))
+    ).first()
+    if active:
+        raise HTTPException(409, "a run is already pending or running for this task")
     asyncio.create_task(run_task(task_id))
     return {"queued": True}
 
