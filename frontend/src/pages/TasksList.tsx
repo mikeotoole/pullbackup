@@ -106,6 +106,7 @@ export function TasksList() {
                   ) : pill}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <Link to={`/tasks/${t.id}/runs`} title="Run history" className="inline-block w-7 text-center text-muted hover:text-white">🕘</Link>
                   <Link to={`/tasks/${t.id}/edit`} title="Edit" className="inline-block w-7 text-center text-muted hover:text-white">✎</Link>
                   <Link to="/tasks/new" state={{ clone: t }} title="Clone (opens an unsaved copy)" className="inline-block w-7 text-center text-muted hover:text-white">⧉</Link>
                   {t.kuma_monitor_id && sys?.kuma_url && (

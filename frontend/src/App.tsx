@@ -3,6 +3,7 @@ import { TasksList } from "./pages/TasksList";
 import { TaskForm } from "./pages/TaskForm";
 import { Sources } from "./pages/Sources";
 import { RunDetail } from "./pages/RunDetail";
+import { RunHistory } from "./pages/RunHistory";
 
 export default function App() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="/tasks/new" element={<TaskForm />} />
           <Route path="/tasks/:id/edit" element={<TaskForm />} />
           <Route path="/sources" element={<Sources />} />
+          <Route path="/tasks/:id/runs" element={<RunHistory />} />
           <Route path="/runs/:id" element={<RunDetail />} />
         </Routes>
       </main>
