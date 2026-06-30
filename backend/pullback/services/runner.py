@@ -88,6 +88,14 @@ def build_syncoid_args(task: Task, source: Source) -> list[str]:
     args.append(f"--sshkey={source.ssh_key_path}")
     if source.port and source.port != 22:
         args.append(f"--sshport={source.port}")
+    # Match the rsync path's SSH behaviour. syncoid's ssh otherwise strict-checks
+    # against the ephemeral /root/.ssh/known_hosts, so a container recreate breaks
+    # every task with "Host key verification failed". accept-new + a known_hosts
+    # in the persistent /data volume learns the host key once and keeps it.
+    args.append("--sshoption=StrictHostKeyChecking=accept-new")
+    args.append(f"--sshoption=UserKnownHostsFile={settings.data_dir / 'known_hosts'}")
+    args.append("--sshoption=BatchMode=yes")
+    args.append("--sshoption=ServerAliveInterval=30")
     if task.syncoid_extra_args.strip():
         args.extend(task.syncoid_extra_args.split())
     src = f"{source.user}@{source.host}:{task.remote_path}"  # remote ZFS dataset
