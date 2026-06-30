@@ -48,6 +48,12 @@ class Task(SQLModel, table=True):
     syncoid_no_sync_snap: bool = True    # --no-sync-snap (replicate existing snaps, don't make new)
     syncoid_compress: str = ""           # "" | none | lz4 | zstd-fast | gzip ... -> --compress
     syncoid_extra_args: str = ""         # raw extra args, space-split
+    # --force-delete: destroy a diverged/pre-existing target and do a full initial
+    # send. Needed when the target dataset exists but shares NO snapshots with the
+    # source ("Cowardly refusing to destroy your existing target"). DESTRUCTIVE —
+    # the target is recreated from scratch. Usually a one-shot to recover an
+    # out-of-sync replica; turn back off once it's tracking again.
+    syncoid_force_full: bool = False     # --force-delete
     prune_keep_hourly: Optional[int] = None  # keep N newest zfs-auto-snap_hourly snaps on the dst dataset
 
     # rsync flags — names mirror the TrueNAS form

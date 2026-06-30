@@ -25,6 +25,7 @@ export type Task = {
   syncoid_no_sync_snap: boolean;
   syncoid_compress: string;
   syncoid_extra_args: string;
+  syncoid_force_full: boolean;
   prune_keep_hourly: number | null;
   archive: boolean;
   recursive: boolean;

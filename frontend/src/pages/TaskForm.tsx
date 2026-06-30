@@ -26,6 +26,7 @@ const empty: Partial<Task> = {
   syncoid_no_sync_snap: true,
   syncoid_compress: "",
   syncoid_extra_args: "",
+  syncoid_force_full: false,
   prune_keep_hourly: null,
   archive: true,
   recursive: true,
@@ -139,7 +140,7 @@ export function TaskForm() {
       onSubmit={e => { e.preventDefault(); save.mutate(); }}
     >
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{editing ? "Edit" : "Add"} Rsync Task</h1>
+        <h1 className="text-xl font-semibold">{editing ? "Edit" : "Add"} Task</h1>
         <div className="space-x-2">
           <button type="button" className="btn-ghost" onClick={() => nav("/tasks")}>Cancel</button>
           <button type="submit" className="btn-primary" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</button>
@@ -217,6 +218,17 @@ export function TaskForm() {
           {isSyncoid && <>
             <Checkbox label="Recursive (--recursive)" checked={!!form.syncoid_recursive} onChange={v => set("syncoid_recursive", v)} />
             <Checkbox label="No sync snapshot (--no-sync-snap)" checked={!!form.syncoid_no_sync_snap} onChange={v => set("syncoid_no_sync_snap", v)} />
+            <Checkbox
+              label="Replicate from scratch (--force-delete) — destroys & recreates the target"
+              checked={!!form.syncoid_force_full}
+              onChange={v => set("syncoid_force_full", v)}
+            />
+            {form.syncoid_force_full && (
+              <p style={{ color: "#f59e0b", fontSize: "0.8rem", margin: "0.25rem 0 0.5rem 1.6rem" }}>
+                ⚠ Destroys the existing target dataset and does a full initial send. Use when the
+                replica is out of sync (“no snapshots matching”). Turn back off once it’s tracking.
+              </p>
+            )}
             <Field label="Compression (--compress)">
               <select value={form.syncoid_compress ?? ""} onChange={e => set("syncoid_compress", e.target.value)}>
                 <option value="">default</option>

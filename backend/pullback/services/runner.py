@@ -80,6 +80,11 @@ def build_syncoid_args(task: Task, source: Source) -> list[str]:
         args.append("--no-sync-snap")
     if task.syncoid_compress and task.syncoid_compress != "none":
         args.append(f"--compress={task.syncoid_compress}")
+    if task.syncoid_force_full:
+        # Destroy a diverged/pre-existing target and do a full initial send.
+        # Recovers a replica that shares no snapshots with the source (syncoid
+        # otherwise "cowardly refuses to destroy your existing target").
+        args.append("--force-delete")
     args.append(f"--sshkey={source.ssh_key_path}")
     if source.port and source.port != 22:
         args.append(f"--sshport={source.port}")

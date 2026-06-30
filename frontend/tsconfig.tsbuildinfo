@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/components/StatusPill.tsx","./src/components/Toggle.tsx","./src/lib/api.ts","./src/pages/RunDetail.tsx","./src/pages/Sources.tsx","./src/pages/TaskForm.tsx","./src/pages/TasksList.tsx"],"version":"5.9.3"}

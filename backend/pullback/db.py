@@ -30,6 +30,7 @@ def _ensure_columns() -> None:
             ("syncoid_no_sync_snap", "BOOLEAN NOT NULL DEFAULT 1"),
             ("syncoid_compress", "VARCHAR NOT NULL DEFAULT ''"),
             ("syncoid_extra_args", "VARCHAR NOT NULL DEFAULT ''"),
+            ("syncoid_force_full", "BOOLEAN NOT NULL DEFAULT 0"),
             ("prune_keep_hourly", "INTEGER"),
         ],
     }

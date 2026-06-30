@@ -11,9 +11,11 @@ RUN npm run build
 FROM mirror.gcr.io/library/python:3.13-slim AS runtime
 # zfsutils-linux (the `zfs`/`zpool` CLI syncoid needs) lives in Debian `contrib`; enable it.
 # syncoid ships in the `sanoid` package; mbuffer/pv/lzop are its transport helpers.
+# procps gives `ps`, which syncoid shells out to — without it every run logs
+# "Can't exec ps: No such file or directory at /usr/sbin/syncoid".
 RUN sed -i 's/ main/ main contrib/' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null; \
     apt-get update && apt-get install -y --no-install-recommends \
-        rsync openssh-client ca-certificates tini tzdata \
+        rsync openssh-client ca-certificates tini tzdata procps \
         sanoid zfsutils-linux mbuffer pv lzop \
     && rm -rf /var/lib/apt/lists/*
 

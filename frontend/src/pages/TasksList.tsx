@@ -1,8 +1,13 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type Task } from "../lib/api";
 import { StatusPill } from "../components/StatusPill";
 import { Toggle } from "../components/Toggle";
+
+// syncoid tasks are surfaced as "zfs" in the UI
+const typeLabel = (t: Task) => (t.task_type === "syncoid" ? "zfs" : "rsync");
+type TypeFilter = "all" | "rsync" | "zfs";
 
 function relTime(iso: string | null) {
   if (!iso) return "N/A";
@@ -26,6 +31,8 @@ export function TasksList() {
   const { data: sources = [] } = useQuery({ queryKey: ["sources"], queryFn: api.listSources });
   const { data: sys } = useQuery({ queryKey: ["sysinfo"], queryFn: api.systemInfo });
   const sourceById = Object.fromEntries(sources.map(s => [s.id, s] as const));
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const shown = tasks.filter(t => typeFilter === "all" || typeLabel(t) === typeFilter);
 
   const toggle = useMutation({
     mutationFn: (t: Task) => api.updateTask(t.id, { ...t, enabled: !t.enabled }),
@@ -47,14 +54,28 @@ export function TasksList() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Rsync Tasks</h1>
-        <Link to="/tasks/new" className="btn-primary">+ Add Rsync Task</Link>
+        <div className="flex items-center gap-4">
+          <h1 className="text-xl font-semibold">Tasks</h1>
+          <div className="flex gap-1 text-xs">
+            {(["all", "rsync", "zfs"] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setTypeFilter(f)}
+                className={`px-2 py-1 rounded border capitalize ${typeFilter === f ? "bg-accent text-white border-accent" : "border-border text-muted hover:text-white"}`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Link to="/tasks/new" className="btn-primary">+ Add Task</Link>
       </div>
       <div className="bg-panel border border-border rounded overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-muted text-left">
             <tr className="border-b border-border">
               <th className="px-4 py-3 font-medium">Remote Path</th>
+              <th className="px-4 py-3 font-medium">Type</th>
               <th className="px-4 py-3 font-medium">Source</th>
               <th className="px-4 py-3 font-medium">Frequency</th>
               <th className="px-4 py-3 font-medium">Next Run</th>
@@ -65,14 +86,15 @@ export function TasksList() {
             </tr>
           </thead>
           <tbody>
-            {tasks.length === 0 && (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-muted">No tasks yet. Add one to get started.</td></tr>
+            {shown.length === 0 && (
+              <tr><td colSpan={9} className="px-4 py-8 text-center text-muted">No tasks{typeFilter !== "all" ? ` of type "${typeFilter}"` : " yet"}. Add one to get started.</td></tr>
             )}
-            {tasks.map(t => {
+            {shown.map(t => {
               const pill = <StatusPill state={t.last_run_state} />;
               return (
               <tr key={t.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-mono text-xs" title={`local: ${t.local_path}`}>{t.remote_path}</td>
+                <td className="px-4 py-3 text-xs"><span className="px-1.5 py-0.5 rounded bg-border/60 font-mono">{typeLabel(t)}</span></td>
                 <td className="px-4 py-3 text-muted text-xs">{sourceById[t.source_id]?.name ?? "—"}</td>
                 <td className="px-4 py-3 font-mono text-xs">{t.cron}</td>
                 <td className="px-4 py-3 text-muted text-xs">{t.enabled ? relTime(t.next_run) : "Disabled"}</td>

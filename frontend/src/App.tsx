@@ -9,9 +9,19 @@ export default function App() {
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-border bg-panel">
         <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-6">
-          <div className="font-semibold text-lg">pullback</div>
+          <div className="flex items-center gap-2 font-semibold text-lg">
+            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+              <rect width="32" height="32" rx="7" fill="#7c3aed" />
+              <g fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M16 5.5 V16.5" />
+                <path d="M10.8 11.7 L16 16.9 L21.2 11.7" />
+                <path d="M8 20.5 V25 H24 V20.5" />
+              </g>
+            </svg>
+            pullback
+          </div>
           <nav className="flex gap-4 text-sm">
-            <NavLink to="/tasks" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>Rsync Tasks</NavLink>
+            <NavLink to="/tasks" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>Tasks</NavLink>
             <NavLink to="/sources" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>Sources</NavLink>
           </nav>
         </div>

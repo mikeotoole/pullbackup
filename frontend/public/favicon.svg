@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="pullback">
+  <rect width="32" height="32" rx="7" fill="#7c3aed"/>
+  <g fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <!-- arrow pulling data down -->
+    <path d="M16 5.5 V16.5"/>
+    <path d="M10.8 11.7 L16 16.9 L21.2 11.7"/>
+    <!-- storage tray it lands in -->
+    <path d="M8 20.5 V25 H24 V20.5"/>
+  </g>
+</svg>

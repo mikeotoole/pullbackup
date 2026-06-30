@@ -28,6 +28,7 @@ class TaskIn(BaseModel):
     syncoid_no_sync_snap: bool = True
     syncoid_compress: str = ""
     syncoid_extra_args: str = ""
+    syncoid_force_full: bool = False
     prune_keep_hourly: Optional[int] = None
     archive: bool = True
     recursive: bool = True
