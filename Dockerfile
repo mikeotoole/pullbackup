@@ -13,10 +13,14 @@ FROM mirror.gcr.io/library/python:3.13-slim AS runtime
 # syncoid ships in the `sanoid` package; mbuffer/pv/lzop are its transport helpers.
 # procps gives `ps`, which syncoid shells out to — without it every run logs
 # "Can't exec ps: No such file or directory at /usr/sbin/syncoid".
+COPY scripts/patch_syncoid_control_master.py /tmp/patch_syncoid_control_master.py
 RUN sed -i 's/ main/ main contrib/' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null; \
     apt-get update && apt-get install -y --no-install-recommends \
         rsync openssh-client ca-certificates tini tzdata procps \
         sanoid zfsutils-linux mbuffer pv lzop \
+    && python3 /tmp/patch_syncoid_control_master.py /usr/sbin/syncoid \
+    && perl -c /usr/sbin/syncoid \
+    && rm /tmp/patch_syncoid_control_master.py \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
