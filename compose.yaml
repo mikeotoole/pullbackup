@@ -7,12 +7,18 @@ services:
   pullback:
     image: registry-write.s.lagoon.cloud/lagoon/pullback:0.10.0
     container_name: pullback
-    restart: unless-stopped
+    restart: "no"
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
     environment:
       TZ: ${TZ}
       PULLBACK_DATA_DIR: /data
       PULLBACK_DEST_ROOTS: /mnt/dest/backups
-      PULLBACK_MAX_CONCURRENT_RUNS: "4"
+      PULLBACK_ZFS_DEST_ROOTS: cache/docker_remote
+      PULLBACK_MAX_CONCURRENT_RUNS: "1"
+      PULLBACK_HTTP_BASIC_USERNAME: ${PULLBACK_HTTP_BASIC_USERNAME:?required}
+      PULLBACK_HTTP_BASIC_PASSWORD: ${PULLBACK_HTTP_BASIC_PASSWORD:?required}
       # Matrix (blank = feature disabled in UI)
       MATRIX_HOMESERVER: ${MATRIX_HOMESERVER}
       MATRIX_TOKEN: ${MATRIX_TOKEN}
@@ -43,7 +49,15 @@ services:
       - traefik.http.routers.pullback.tls=true
       - traefik.http.services.pullback.loadbalancer.server.port=8000
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/system/health', timeout=3).status==200 else 1)"]
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import base64,os,urllib.request,sys;
+          credentials=(os.environ["PULLBACK_HTTP_BASIC_USERNAME"]+":"+os.environ["PULLBACK_HTTP_BASIC_PASSWORD"]).encode();
+          request=urllib.request.Request("http://localhost:8000/api/system/health",headers={"Authorization":"Basic "+base64.b64encode(credentials).decode()});
+          sys.exit(0 if urllib.request.urlopen(request,timeout=3).status==200 else 1)
       interval: 30s
       timeout: 5s
       retries: 3

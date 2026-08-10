@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,8 +10,11 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("/data")
     dest_roots: str = "/mnt/dest/backups"
-    max_concurrent_runs: int = 4
+    zfs_dest_roots: str = ""
+    max_concurrent_runs: int = 1
     log_retention_runs: int = 200
+    http_basic_username: str = ""
+    http_basic_password: str = ""
 
     matrix_homeserver: str = ""
     matrix_token: str = ""
@@ -24,6 +28,14 @@ class Settings(BaseSettings):
     @property
     def dest_roots_list(self) -> list[Path]:
         return [Path(p.strip()) for p in self.dest_roots.split(",") if p.strip()]
+
+    @property
+    def zfs_dest_roots_list(self) -> list[str]:
+        return [
+            normalized
+            for value in self.zfs_dest_roots.split(",")
+            if (normalized := value.strip().strip("/"))
+        ]
 
     @property
     def tz_name(self) -> str:

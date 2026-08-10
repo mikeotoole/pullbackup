@@ -17,7 +17,7 @@ Pull-only rsync task manager. Web UI like TrueNAS's "Rsync Tasks" but inverted: 
 
 ## Deployment
 
-Built as a single container image (`pullback:<tag>`) and deployed as a Komodo stack pinned to **seal**. Traefik-routed at `https://pullback.seal.lagoon.cloud`. Bind-mount the destination roots you want exposed; pullback's filesystem browser is allowlisted to those roots.
+Built as a single container image (`pullback:<tag>`) and deployed as a Komodo stack pinned to **seal**. Traefik-routed at `https://pullback.seal.lagoon.cloud`. Bind-mount the destination roots you want exposed; pullback's filesystem browser is allowlisted to those roots. All UI and API routes except `/api/system/health` require HTTP Basic authentication.
 
 ```
 volumes:
@@ -32,6 +32,8 @@ volumes:
 # Backend
 cd backend
 uv sync
+export PULLBACK_HTTP_BASIC_USERNAME=pullback-dev
+export PULLBACK_HTTP_BASIC_PASSWORD=$(openssl rand -base64 32)
 uv run uvicorn pullback.main:app --reload --port 8000
 
 # Frontend (separate terminal)
@@ -42,4 +44,8 @@ npm run dev   # Vite proxies /api → :8000
 
 ## Env
 
-See `.env.example`. Only the optional Matrix/Kuma blocks are sensitive; the rest is paths and tuning.
+See `.env.example`. Deployment requires both `PULLBACK_HTTP_BASIC_USERNAME` and `PULLBACK_HTTP_BASIC_PASSWORD`; the password must contain at least 32 characters. Keep the password in the deployment secret store, not in source control.
+
+`PULLBACK_ZFS_DEST_ROOTS` is a comma-separated allowlist for Syncoid destinations and ZFS pruning. Each Syncoid destination must be a descendant of one configured dataset root (for example, `cache/docker_remote/eel` beneath `cache/docker_remote`). An empty allowlist disables Syncoid and pruning operations. `PULLBACK_DEST_ROOTS` remains the separate filesystem allowlist for rsync destinations and the browser.
+
+Matrix and Uptime Kuma credentials are optional; omit their values to disable those integrations.

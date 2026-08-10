@@ -1,15 +1,22 @@
-import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from pydantic import BaseModel
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel, Field, model_validator
 from sqlmodel import Session, select
+
 from ..config import settings
 from ..db import get_session
-from ..models import Task, Run, RunState, Source, utcnow
-from ..services import scheduler, kuma
-from ..services.runner import run_task
+from ..models import Run, RunState, Source, Task, utcnow
+from ..services import kuma, scheduler
+from ..services.runner import (
+    admit_run,
+    lifecycle_mutation_lock,
+    start_admitted_run,
+    validate_zfs_destination,
+    validate_zfs_source,
+)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 log = logging.getLogger(__name__)
@@ -29,7 +36,7 @@ class TaskIn(BaseModel):
     syncoid_compress: str = ""
     syncoid_extra_args: str = ""
     syncoid_force_full: bool = False
-    prune_keep_hourly: Optional[int] = None
+    prune_keep_hourly: Optional[int] = Field(default=None, ge=1)
     archive: bool = True
     recursive: bool = True
     times: bool = True
@@ -46,6 +53,13 @@ class TaskIn(BaseModel):
     notify_matrix: bool = False
     notify_matrix_on_success: bool = False
     kuma_enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_syncoid_datasets(self):
+        if self.task_type == "syncoid":
+            validate_zfs_source(self.remote_path)
+            validate_zfs_destination(self.local_path)
+        return self
 
 
 class TaskOut(TaskIn):
@@ -72,6 +86,15 @@ def _to_out(t: Task, session: Session) -> TaskOut:
         last_run_at=last.started_at if last else None,
         last_run_state=last.state if last else None,
     )
+
+
+def _has_active_run(session: Session, task_id: int) -> bool:
+    return session.exec(
+        select(Run).where(
+            Run.task_id == task_id,
+            Run.state.in_([RunState.pending, RunState.running]),
+        )
+    ).first() is not None
 
 
 @router.get("", response_model=list[TaskOut])
@@ -102,63 +125,64 @@ def get_task(task_id: int, session: Session = Depends(get_session)):
 
 @router.patch("/{task_id}", response_model=TaskOut)
 async def update_task(task_id: int, data: TaskIn, session: Session = Depends(get_session)):
-    t = session.get(Task, task_id)
-    if not t:
-        raise HTTPException(404)
-    prev_cron = t.cron
-    prev_enabled = t.enabled
-    prev_kuma = t.kuma_enabled
-    for k, v in data.model_dump().items():
-        setattr(t, k, v)
-    t.updated_at = utcnow()
-    session.add(t)
-    session.commit()
-    session.refresh(t)
-    await _sync_kuma(t, session, prev_kuma=prev_kuma, prev_cron=prev_cron, prev_enabled=prev_enabled)
-    scheduler.upsert_job(t)
-    return _to_out(t, session)
+    async with lifecycle_mutation_lock():
+        t = session.get(Task, task_id)
+        if not t:
+            raise HTTPException(404)
+        if _has_active_run(session, task_id):
+            raise HTTPException(409, "task cannot be modified while a run is pending or running")
+        prev_cron = t.cron
+        prev_enabled = t.enabled
+        prev_kuma = t.kuma_enabled
+        for k, v in data.model_dump().items():
+            setattr(t, k, v)
+        t.updated_at = utcnow()
+        session.add(t)
+        session.commit()
+        session.refresh(t)
+        await _sync_kuma(t, session, prev_kuma=prev_kuma, prev_cron=prev_cron, prev_enabled=prev_enabled)
+        scheduler.upsert_job(t)
+        return _to_out(t, session)
 
 
 @router.delete("/{task_id}", status_code=204)
 async def delete_task(task_id: int, session: Session = Depends(get_session)):
-    t = session.get(Task, task_id)
-    if not t:
-        raise HTTPException(404)
-    if t.kuma_monitor_id and (k := kuma.client()):
-        try:
-            await k.delete(t.kuma_monitor_id)
-        except Exception as e:
-            log.warning("kuma delete failed: %s", e)
-    scheduler.remove_job(task_id)
-    # Delete child runs first: Run.task_id is NOT NULL with no ORM cascade, so deleting the
-    # parent task alone would try to NULL the FK and raise IntegrityError (the silent-500 that
-    # made the UI "do nothing"). Also clean up each run's on-disk log.
-    runs = session.exec(select(Run).where(Run.task_id == task_id)).all()
-    for r in runs:
-        if r.log_filename:
+    async with lifecycle_mutation_lock():
+        t = session.get(Task, task_id)
+        if not t:
+            raise HTTPException(404)
+        if _has_active_run(session, task_id):
+            raise HTTPException(409, "task cannot be deleted while a run is pending or running")
+        if t.kuma_monitor_id and (k := kuma.client()):
             try:
-                (settings.log_dir / r.log_filename).unlink(missing_ok=True)
+                await k.delete(t.kuma_monitor_id)
             except Exception as e:
-                log.warning("run log unlink failed for %s: %s", r.log_filename, e)
-        session.delete(r)
-    session.delete(t)
-    session.commit()
+                log.warning("kuma delete failed: %s", e)
+        scheduler.remove_job(task_id)
+        # Delete child runs first: Run.task_id is NOT NULL with no ORM cascade, so deleting the
+        # parent task alone would try to NULL the FK and raise IntegrityError (the silent-500 that
+        # made the UI "do nothing"). Also clean up each run's on-disk log.
+        runs = session.exec(select(Run).where(Run.task_id == task_id)).all()
+        for r in runs:
+            if r.log_filename:
+                try:
+                    (settings.log_dir / r.log_filename).unlink(missing_ok=True)
+                except Exception as e:
+                    log.warning("run log unlink failed for %s: %s", r.log_filename, e)
+            session.delete(r)
+        session.delete(t)
+        session.commit()
 
 
 @router.post("/{task_id}/run", status_code=202)
 async def run_now(task_id: int, bg: BackgroundTasks, session: Session = Depends(get_session)):
     if not session.get(Task, task_id):
         raise HTTPException(404)
-    # Don't pile up redundant runs. ZFS tasks sharing a source serialize behind a
-    # long replication, so clicking Run repeatedly used to queue several identical
-    # runs that all execute later. Refuse if one is already pending/running.
-    active = session.exec(
-        select(Run).where(Run.task_id == task_id,
-                          Run.state.in_([RunState.pending, RunState.running]))
-    ).first()
-    if active:
-        raise HTTPException(409, "a run is already pending or running for this task")
-    asyncio.create_task(run_task(task_id))
+    admission = await admit_run(task_id)
+    if not admission.accepted:
+        scope = "task" if admission.reason == "task_active" else "source"
+        raise HTTPException(409, f"a run is already pending or running for this {scope}")
+    start_admitted_run(admission.accepted_run_id())
     return {"queued": True}
 
 

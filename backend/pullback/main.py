@@ -1,28 +1,35 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from .api import runs, sources, system, tasks
 from .db import init_db
-from .services import scheduler, ssh
-from .api import sources, tasks, runs, system
+from .http_auth import HttpBasicAuthMiddleware, require_valid_configuration
+from .services import runner, scheduler, ssh
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    require_valid_configuration()
     init_db()
+    runner.reconcile_stale_runs()
     ssh.ensure_default_key()
     scheduler.start()
     try:
         yield
     finally:
         scheduler.shutdown()
+        await runner.shutdown_execution_tasks()
 
 
 app = FastAPI(title="pullback", lifespan=lifespan)
+app.add_middleware(HttpBasicAuthMiddleware)
 app.include_router(system.router)
 app.include_router(sources.router)
 app.include_router(tasks.router)

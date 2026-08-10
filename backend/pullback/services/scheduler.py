@@ -1,9 +1,11 @@
 import asyncio
 import logging
 from typing import Optional
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlmodel import Session, select
+
 from ..config import settings
 from ..db import engine
 from ..models import Task
@@ -24,9 +26,18 @@ def get_scheduler() -> AsyncIOScheduler:
 
 
 async def _execute(task_id: int):
-    from .runner import run_task
+    from .runner import admit_run, start_admitted_run
     try:
-        await run_task(task_id)
+        admission = await admit_run(task_id)
+        if not admission.accepted:
+            log.info(
+                "scheduled run denied task_id=%s reason=%s",
+                task_id,
+                admission.reason,
+                extra={"task_id": task_id, "reason": admission.reason},
+            )
+            return
+        await start_admitted_run(admission.accepted_run_id())
     except Exception:
         log.exception("scheduled task %s failed", task_id)
 
@@ -42,7 +53,16 @@ def upsert_job(task: Task) -> None:
     except Exception as e:
         log.warning("task %s has invalid cron %r: %s", task.id, task.cron, e)
         return
-    sched.add_job(_execute, trigger=trigger, args=[task.id], id=job_id, replace_existing=True)
+    sched.add_job(
+        _execute,
+        trigger=trigger,
+        args=[task.id],
+        id=job_id,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=60,
+    )
 
 
 def remove_job(task_id: int) -> None:
@@ -58,7 +78,16 @@ def start() -> None:
         for t in tasks:
             try:
                 trigger = CronTrigger.from_crontab(t.cron, timezone=settings.tzinfo)
-                sched.add_job(_execute, trigger=trigger, args=[t.id], id=_job_id(t.id), replace_existing=True)
+                sched.add_job(
+                    _execute,
+                    trigger=trigger,
+                    args=[t.id],
+                    id=_job_id(t.id),
+                    replace_existing=True,
+                    max_instances=1,
+                    coalesce=True,
+                    misfire_grace_time=60,
+                )
             except Exception as e:
                 log.warning("skipping task %s: %s", t.id, e)
     sched.start()

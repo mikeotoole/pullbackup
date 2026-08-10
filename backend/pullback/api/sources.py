@@ -1,8 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlmodel import Session, select
+
 from ..db import get_session
-from ..models import Source, Task
+from ..models import Run, RunState, Source, Task
+from ..services.runner import (
+    lifecycle_mutation_lock,
+    validate_ssh_host,
+    validate_ssh_user,
+)
 
 router = APIRouter(prefix="/api/sources", tags=["sources"])
 
@@ -14,6 +20,16 @@ class SourceIn(BaseModel):
     port: int = 22
     ssh_key_path: str
     description: str = ""
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, value: str) -> str:
+        return validate_ssh_host(value)
+
+    @field_validator("user")
+    @classmethod
+    def validate_user(cls, value: str) -> str:
+        return validate_ssh_user(value)
 
 
 class SourceOut(SourceIn):
@@ -58,17 +74,28 @@ def get_source(source_id: int, session: Session = Depends(get_session)):
 
 
 @router.patch("/{source_id}", response_model=SourceOut)
-def update_source(source_id: int, data: SourceIn, session: Session = Depends(get_session)):
-    s = session.get(Source, source_id)
-    if not s:
-        raise HTTPException(404)
-    for k, v in data.model_dump().items():
-        setattr(s, k, v)
-    session.add(s)
-    session.commit()
-    session.refresh(s)
-    n = session.exec(select(Task).where(Task.source_id == s.id)).all()
-    return _to_out(s, len(n))
+async def update_source(source_id: int, data: SourceIn, session: Session = Depends(get_session)):
+    async with lifecycle_mutation_lock():
+        s = session.get(Source, source_id)
+        if not s:
+            raise HTTPException(404)
+        active_run = session.exec(
+            select(Run)
+            .join(Task, Run.task_id == Task.id)
+            .where(
+                Task.source_id == source_id,
+                Run.state.in_([RunState.pending, RunState.running]),
+            )
+        ).first()
+        if active_run:
+            raise HTTPException(409, "source cannot be modified while a run is pending or running")
+        for k, v in data.model_dump().items():
+            setattr(s, k, v)
+        session.add(s)
+        session.commit()
+        session.refresh(s)
+        n = session.exec(select(Task).where(Task.source_id == s.id)).all()
+        return _to_out(s, len(n))
 
 
 @router.delete("/{source_id}", status_code=204)
