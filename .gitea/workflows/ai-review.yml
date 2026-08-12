@@ -56,7 +56,7 @@ jobs:
           git -C "$RUN_ROOT/work" remote set-url origin "https://git.lagoon.cloud/${REPO}.git"
           git -C "$RUN_ROOT/work" checkout -q "$HEAD"
           git -C "$RUN_ROOT/work" diff -U3 "$BASE" "$HEAD" -- . \
-            ':(exclude)**/*.lock' ':(exclude)**/package-lock.json' > "$RUN_ROOT/pr.diff"
+            ':(exclude)**/*.lock' > "$RUN_ROOT/pr.diff"
 
       - name: Run OpenAI-compatible reviewer
         env:
