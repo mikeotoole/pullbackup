@@ -1,0 +1,110 @@
+# AI review on the exact PR head in the isolated runner boundary.
+# Requires org Actions secrets OPENAI_API_KEY and REVIEWER_BOT_TOKEN.
+name: ai-review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: review-isolated
+    if: ${{ !github.event.pull_request.draft && !contains(github.event.pull_request.title, '[skip-review]') }}
+    steps:
+      - name: Prepare isolated reviewer toolchain
+        run: |
+          set -eu
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash ca-certificates git jq python3
+
+      - name: Prepare exact-head review context
+        env:
+          GITEA_TOKEN: ${{ secrets.REVIEWER_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # Accepted Lagoon/pr-reviewer PR #7 exact head. Its reviewed change replaces
+          # the forbidden issue-comment signal with an ordinary issue comment using a separate write:issue token.
+          # The COMMENT body carries the official APPROVED review ID/SHA;
+          # factory authorization still re-fetches and validates that official record.
+          REVIEWER_REV: b8eb83e5c1784857c2ac135d27435ce1cdb95d08
+        run: |
+          set -euo pipefail
+          RUN_ROOT="/tmp/ai-review-${PR}-${HEAD}"
+          rm -rf "$RUN_ROOT"
+          mkdir -p "$RUN_ROOT"
+          [[ "$REVIEWER_REV" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "invalid REVIEWER_REV" >&2
+            exit 1
+          }
+          git init -q "$RUN_ROOT/rev"
+          git -C "$RUN_ROOT/rev" remote add origin "https://x:${GITEA_TOKEN}@git.lagoon.cloud/lagoon/pr-reviewer.git"
+          git -C "$RUN_ROOT/rev" fetch -q --depth=1 origin "$REVIEWER_REV"
+          git -C "$RUN_ROOT/rev" checkout -q --detach "$REVIEWER_REV"
+          ACTUAL_REVIEWER_REV="$(git -C "$RUN_ROOT/rev" rev-parse HEAD)"
+          test "$ACTUAL_REVIEWER_REV" = "$REVIEWER_REV" || {
+            echo "reviewer revision mismatch" >&2
+            exit 1
+          }
+          grep -Fq '/issues/${PR}/comments' "$RUN_ROOT/rev/post-review.sh"
+                              grep -Fq 'GITEA_SIGNAL_TOKEN' "$RUN_ROOT/rev/post-review.sh"
+          git -C "$RUN_ROOT/rev" remote set-url origin https://git.lagoon.cloud/lagoon/pr-reviewer.git
+          git init -q "$RUN_ROOT/work"
+          git -C "$RUN_ROOT/work" remote add origin "https://x:${GITEA_TOKEN}@git.lagoon.cloud/${REPO}.git"
+          git -C "$RUN_ROOT/work" fetch -q --depth=1 origin "$BASE" "$HEAD" \
+            || { sleep 15; git -C "$RUN_ROOT/work" fetch -q --depth=1 origin "$BASE" "$HEAD"; }
+          git -C "$RUN_ROOT/work" remote set-url origin "https://git.lagoon.cloud/${REPO}.git"
+          git -C "$RUN_ROOT/work" checkout -q "$HEAD"
+          git -C "$RUN_ROOT/work" diff -U3 "$BASE" "$HEAD" -- . \
+            ':(exclude)**/*.lock' ':(exclude)**/package-lock.json' > "$RUN_ROOT/pr.diff"
+
+      - name: Run OpenAI-compatible reviewer
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: https://cliproxyapi.mantaray.lagoon.cloud/v1
+          REVIEW_PROVIDER: openai-compatible
+          MODEL: gpt-5.6-terra
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          trap 'unset OPENAI_API_KEY OPENAI_BASE_URL MODEL' EXIT
+          test -n "$OPENAI_API_KEY" || {
+            echo "BLOCKED: OPENAI_API_KEY is not securely provisioned" >&2
+            exit 1
+          }
+          test -n "$OPENAI_BASE_URL" || {
+            echo "BLOCKED: OPENAI_BASE_URL is not configured" >&2
+            exit 1
+          }
+          RUN_ROOT="/tmp/ai-review-${PR}-${HEAD}"
+          "$RUN_ROOT/rev/review-pr.sh" --workdir "$RUN_ROOT/work" --diff "$RUN_ROOT/pr.diff" \
+            --title "$TITLE" > "$RUN_ROOT/review.json"
+
+      - name: Post exact-head review
+        env:
+          GITEA_TOKEN: ${{ secrets.REVIEWER_BOT_TOKEN }}
+          GITEA_SIGNAL_TOKEN: ${{ secrets.FACTORYSIGNALTOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          RUN_ROOT="/tmp/ai-review-${PR}-${HEAD}"
+          SOURCE_REVIEW="$RUN_ROOT/review.json"
+          POST_REVIEW="$RUN_ROOT/review.post.json"
+          if jq -e '(.verdict == "APPROVE") and ((.findings | type) == "array") and ((.findings | length) > 0)' "$SOURCE_REVIEW" >/dev/null; then
+            jq '.verdict = "COMMENT"' "$SOURCE_REVIEW" > "$POST_REVIEW"
+          else
+            cp "$SOURCE_REVIEW" "$POST_REVIEW"
+          fi
+          "$RUN_ROOT/rev/post-review.sh" --review "$POST_REVIEW" \
+            --repo "$REPO" --pr "$PR" --commit "$HEAD"
+
+      - name: Clean review workspace
+        if: ${{ always() }}
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: rm -rf "/tmp/ai-review-${PR}-${HEAD}"
