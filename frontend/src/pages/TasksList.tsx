@@ -2,23 +2,13 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type Task } from "../lib/api";
+import { lastRunTime, relTime } from "../lib/relativeTime";
 import { StatusPill } from "../components/StatusPill";
 import { Toggle } from "../components/Toggle";
 
 // syncoid tasks are surfaced as "zfs" in the UI
 const typeLabel = (t: Task) => (t.task_type === "syncoid" ? "zfs" : "rsync");
 type TypeFilter = "all" | "rsync" | "zfs";
-
-function relTime(iso: string | null) {
-  if (!iso) return "N/A";
-  const d = new Date(iso).getTime();
-  const now = Date.now();
-  const s = Math.round((d - now) / 1000);
-  const abs = Math.abs(s);
-  const fmt = (n: number, u: string) => `${n} ${u}${n !== 1 ? "s" : ""}`;
-  const value = abs < 60 ? fmt(abs, "second") : abs < 3600 ? fmt(Math.round(abs/60), "minute") : abs < 86400 ? fmt(Math.round(abs/3600), "hour") : fmt(Math.round(abs/86400), "day");
-  return s < 0 ? `${value} ago` : `in ${value}`;
-}
 
 export function TasksList() {
   const qc = useQueryClient();
@@ -98,7 +88,7 @@ export function TasksList() {
                 <td className="px-4 py-3 text-muted text-xs">{sourceById[t.source_id]?.name ?? "—"}</td>
                 <td className="px-4 py-3 font-mono text-xs">{t.cron}</td>
                 <td className="px-4 py-3 text-muted text-xs">{t.enabled ? relTime(t.next_run) : "Disabled"}</td>
-                <td className="px-4 py-3 text-muted text-xs">{relTime(t.last_run_at)}</td>
+                <td className="px-4 py-3 text-muted text-xs">{lastRunTime(t.last_run_at)}</td>
                 <td className="px-4 py-3"><Toggle checked={t.enabled} onChange={() => toggle.mutate(t)} /></td>
                 <td className="px-4 py-3">
                   {t.last_run_id ? (
