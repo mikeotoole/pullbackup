@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..db import engine
 from ..models import Run, RunState, Source, Task, utcnow
+from . import fs
 
 # concurrency control
 _global_sem = asyncio.Semaphore(settings.max_concurrent_runs)
@@ -124,6 +125,10 @@ def _source_lock(source_id: int) -> asyncio.Lock:
 
 
 def build_rsync_args(task: Task, source: Source) -> list[str]:
+    # Defense in depth: the API rejects an out-of-root destination on write, but a row
+    # persisted before that check existed (or written by any other path) must not reach
+    # rsync. Resolve through the same shared resolver and use its canonical result.
+    destination = fs.resolve_destination(task.local_path)
     args = ["rsync"]
     if task.archive:
         args.append("-a")
@@ -169,7 +174,7 @@ def build_rsync_args(task: Task, source: Source) -> list[str]:
     args.extend(["-e", ssh_cmd])
 
     remote = f"{source.user}@{source.host}:{task.remote_path}"
-    args.extend([remote, task.local_path])
+    args.extend([remote, str(destination)])
     return args
 
 
@@ -365,7 +370,9 @@ async def _execute_run(run_id: int) -> int:
         # rsync writes into a filesystem path (create it); syncoid's target is a ZFS
         # dataset that `zfs receive` creates itself — don't mkdir it.
         if task.task_type != "syncoid":
-            Path(task.local_path).mkdir(parents=True, exist_ok=True)
+            # Re-resolve rather than reusing task.local_path: creating the directory is
+            # itself a write, so it must go through the same boundary as the command.
+            fs.resolve_destination(task.local_path).mkdir(parents=True, exist_ok=True)
 
         exit_code: Optional[int] = None
         proc: Optional[asyncio.subprocess.Process] = None

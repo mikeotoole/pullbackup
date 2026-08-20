@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..db import get_session
 from ..models import Run, RunState, Source, Task, utcnow
-from ..services import kuma, scheduler
+from ..services import fs, kuma, scheduler
 from ..services.runner import (
     admit_run,
     lifecycle_mutation_lock,
@@ -22,7 +22,15 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 log = logging.getLogger(__name__)
 
 
-class TaskIn(BaseModel):
+class TaskFields(BaseModel):
+    """Shared task field set, with NO validation.
+
+    Deliberately validator-free so it can be reused by the output model: destination
+    enforcement is a *write* boundary. A row persisted before that boundary existed
+    must still serialize, or the single task an operator needs to remediate would
+    break its own detail response and the whole task list.
+    """
+
     name: str
     source_id: int
     remote_path: str
@@ -54,15 +62,26 @@ class TaskIn(BaseModel):
     notify_matrix_on_success: bool = False
     kuma_enabled: bool = False
 
+
+class TaskIn(TaskFields):
+    """Write model: everything accepted from a client passes the boundary checks."""
+
     @model_validator(mode="after")
-    def validate_syncoid_datasets(self):
+    def validate_destination(self):
         if self.task_type == "syncoid":
             validate_zfs_source(self.remote_path)
             validate_zfs_destination(self.local_path)
+        else:
+            # rsync writes into the filesystem: the destination must resolve inside a
+            # configured root. Same shared resolver the runner re-checks before exec.
+            try:
+                fs.resolve_destination(self.local_path)
+            except fs.PathNotAllowed as error:
+                raise ValueError(str(error)) from error
         return self
 
 
-class TaskOut(TaskIn):
+class TaskOut(TaskFields):
     id: int
     kuma_monitor_id: Optional[int] = None
     kuma_push_token: Optional[str] = None
@@ -77,7 +96,7 @@ def _to_out(t: Task, session: Session) -> TaskOut:
         select(Run).where(Run.task_id == t.id).order_by(Run.started_at.desc())
     ).first()
     return TaskOut(
-        **{k: getattr(t, k) for k in TaskIn.model_fields.keys()},
+        **{k: getattr(t, k) for k in TaskFields.model_fields.keys()},
         id=t.id,
         kuma_monitor_id=t.kuma_monitor_id,
         kuma_push_token=t.kuma_push_token,

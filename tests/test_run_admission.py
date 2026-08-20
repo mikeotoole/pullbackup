@@ -13,7 +13,7 @@ from pullback.api import sources as sources_api
 from pullback.api import tasks as tasks_api
 from pullback.config import Settings
 from pullback.models import Run, RunState, Source, Task
-from pullback.services import runner, scheduler
+from pullback.services import fs, runner, scheduler
 from sqlmodel import Session, SQLModel, create_engine, select
 
 TEST_HTTP_USERNAME = "pullback-test"
@@ -32,6 +32,7 @@ def sqlite_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(scheduler, "engine", engine)
     monkeypatch.setattr(scheduler, "_scheduler", None)
     monkeypatch.setattr(runner.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(runner.settings, "dest_roots", str(tmp_path))
     monkeypatch.setattr(runner.settings, "zfs_dest_roots", "cache/docker_remote")
     monkeypatch.setattr(runner.settings, "http_basic_username", TEST_HTTP_USERNAME)
     monkeypatch.setattr(runner.settings, "http_basic_password", TEST_HTTP_PASSWORD)
@@ -1457,3 +1458,54 @@ def test_bundled_compose_healthcheck_authenticates():
     assert "Basic" in healthcheck
     assert "PULLBACK_HTTP_BASIC_USERNAME" in healthcheck
     assert "PULLBACK_HTTP_BASIC_PASSWORD" in healthcheck
+
+
+@pytest.mark.parametrize("entry_path", ["run_task", "scheduler"])
+@pytest.mark.asyncio
+async def test_unsafe_persisted_rsync_destination_spawns_nothing(
+    sqlite_engine, tmp_path, monkeypatch, entry_path
+):
+    """A destination persisted outside the configured roots must never run."""
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    outside = tmp_path.parent / f"outside-{entry_path}" / "task"
+    with Session(sqlite_engine) as session:
+        stored_task = session.get(Task, task.id)
+        stored_task.local_path = str(outside)
+        session.add(stored_task)
+        session.commit()
+
+    async def unexpected_process(*args, **kwargs):
+        pytest.fail("unsafe destination reached a subprocess")
+
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", unexpected_process)
+
+    if entry_path == "run_task":
+        with pytest.raises(fs.PathNotAllowed):
+            await runner.run_task(task.id)
+    else:
+        await scheduler._execute(task.id)
+
+    assert not outside.exists()
+    assert not outside.parent.exists()
+    with Session(sqlite_engine) as session:
+        run = session.exec(select(Run).where(Run.task_id == task.id)).one()
+    assert run.state == RunState.failed
+    assert run.exit_code == -1
+    assert "PathNotAllowed" in run.error_message
+
+
+@pytest.mark.asyncio
+async def test_api_rejects_updating_a_task_to_an_out_of_root_destination(
+    sqlite_engine, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(scheduler, "next_run_iso", lambda task: None)
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    outside = tmp_path.parent / "update-outside" / "task"
+
+    with pytest.raises(ValueError):
+        task_input(task, local_path=str(outside))
+
+    with Session(sqlite_engine) as session:
+        unchanged = session.get(Task, task.id)
+    assert unchanged.local_path != str(outside)
+    assert not outside.exists()
