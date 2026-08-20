@@ -1,4 +1,10 @@
 # Run Pullback's canonical backend/frontend gates on the exact PR head.
+#
+# Step scripts must stay POSIX-shell compatible. Gitea act_runner executes
+# `run:` blocks with `sh -e {0}`, and /bin/sh in the pinned container image is
+# dash, which rejects `set -o pipefail`. Use `set -eu` and avoid relying on
+# pipefail; put a command whose exit status matters last in any pipeline, or
+# avoid the pipeline entirely.
 name: tests
 on:
   pull_request_target:
@@ -14,13 +20,14 @@ jobs:
     steps:
       - name: Prepare isolated test toolchain
         run: |
-          set -euo pipefail
+          set -eu
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git xz-utils
           python -m pip install --no-cache-dir uv==0.11.2
           NODE_ARCHIVE=node-v22.23.1-linux-x64.tar.xz
           curl --fail --location --silent --show-error --output "/tmp/$NODE_ARCHIVE" "https://nodejs.org/dist/v22.23.1/$NODE_ARCHIVE"
-          echo "9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578  /tmp/$NODE_ARCHIVE" | sha256sum --check --strict
+          printf '%s  %s\n' "9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578" "/tmp/$NODE_ARCHIVE" > /tmp/node-archive.sha256
+          sha256sum --check --strict /tmp/node-archive.sha256
           mkdir -p /opt/node
           tar -xJf "/tmp/$NODE_ARCHIVE" --strip-components=1 -C /opt/node
           /opt/node/bin/node --version
@@ -32,7 +39,7 @@ jobs:
           REPO: ${{ github.repository }}
           TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          set -euo pipefail
+          set -eu
           RUN_ROOT="/tmp/pullback-tests-${TARGET}"
           rm -rf "$RUN_ROOT"
           mkdir -p "$RUN_ROOT"
@@ -51,7 +58,7 @@ jobs:
           PULLBACK_HTTP_BASIC_USERNAME: ci
           PULLBACK_HTTP_BASIC_PASSWORD: 0123456789abcdef0123456789abcdef
         run: |
-          set -euo pipefail
+          set -eu
           export PATH="/opt/node/bin:$PATH"
           RUN_ROOT="/tmp/pullback-tests-${TARGET}"
           cd "$RUN_ROOT/work"
