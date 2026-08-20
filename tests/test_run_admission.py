@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1032,7 +1033,11 @@ async def test_cancellation_during_snapshot_pruning_reaps_child_and_terminalizes
     syncoid.chmod(0o755)
     zfs = bin_dir / "zfs"
     zfs.write_text(
-        "#!/usr/bin/python3\n"
+        # Resolve the running interpreter rather than hardcoding /usr/bin/python3,
+        # which does not exist in the CI container (python lives at
+        # /usr/local/bin/python3). A missing interpreter makes the stub silently
+        # unexecutable, so zfs_spawned never fires and the test times out.
+        f"#!{sys.executable}\n"
         "import os, sys, time\n"
         "if sys.argv[1] == os.environ['PULLBACK_CANCEL_ZFS_COMMAND']:\n"
         "    time.sleep(300)\n"
