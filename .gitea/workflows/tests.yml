@@ -9,6 +9,10 @@
 # Node is installed to /opt/node, and `npm` is a script with a
 # `#!/usr/bin/env node` shebang. Any step invoking npm must therefore put
 # /opt/node/bin on PATH first, or npm fails with exit 127.
+#
+# uv defaults to copy-on-write/hardlink when populating its build environment.
+# That fails on the runner's overlay filesystem with
+# "Resource temporarily unavailable (os error 11)", so pin UV_LINK_MODE=copy.
 name: tests
 on:
   pull_request_target:
@@ -59,6 +63,7 @@ jobs:
       - name: Run canonical gates without credentials
         env:
           TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+          UV_LINK_MODE: copy
           PULLBACK_DATA_DIR: /tmp/pullback-test-data
           PULLBACK_HTTP_BASIC_USERNAME: ci
           PULLBACK_HTTP_BASIC_PASSWORD: 0123456789abcdef0123456789abcdef

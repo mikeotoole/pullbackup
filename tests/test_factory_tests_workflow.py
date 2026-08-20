@@ -6,6 +6,13 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPOSITORY_ROOT / ".gitea" / "workflows" / "tests.yml"
 
 
+def _steps(workflow: str) -> list[str]:
+    """Split the workflow into per-step text blocks."""
+    marker = "      - name: "
+    parts = workflow.split(marker)
+    return [marker + part for part in parts[1:]]
+
+
 def _run_scripts(workflow: str) -> list[str]:
     """Return each `run: |` block body from the workflow."""
     blocks = []
@@ -110,4 +117,32 @@ def test_npm_invocations_have_node_on_path():
         )
         assert min(export_lines) < min(npm_lines), (
             "PATH must be extended with /opt/node/bin before the first npm call"
+        )
+
+
+def test_uv_uses_copy_link_mode():
+    """Guard the uv clone failure on the runner's overlay filesystem.
+
+    uv defaults to reflink/hardlink when populating build environments. On the
+    runner that fails with "Resource temporarily unavailable (os error 11)"
+    while installing build-system.requires, aborting the gates step before any
+    test executes. UV_LINK_MODE=copy forces a portable plain-copy strategy.
+
+    The setting is asserted per-step: a workflow-wide substring check would
+    still pass if UV_LINK_MODE drifted to an unrelated step, leaving the uv
+    invocation unprotected.
+
+    Deliberately implemented with plain text parsing rather than PyYAML, which
+    is not a declared test dependency: an optional import would let this guard
+    silently skip in an environment where it is most needed.
+    """
+    uv_steps = [step for step in _steps(WORKFLOW.read_text()) if "uv run" in step]
+    assert uv_steps, "expected at least one step invoking uv"
+
+    for step in uv_steps:
+        name = step.splitlines()[0].split("- name: ", 1)[1].strip()
+        env_block = step.split("        run:", 1)[0]
+        assert re.search(r"^\s*UV_LINK_MODE:\s*copy\s*$", env_block, flags=re.MULTILINE), (
+            f"step {name!r} invokes uv but does not set UV_LINK_MODE=copy "
+            "in its own env block"
         )
