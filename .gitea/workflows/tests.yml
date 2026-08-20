@@ -1,0 +1,67 @@
+# Run Pullback's canonical backend/frontend gates on the exact PR head.
+name: tests
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: review-isolated
+    container:
+      image: python:3.13.11-slim-bookworm@sha256:20080e807bfc404f8450b185cf0fc95d553462673598549613735f70a5b4d5d0
+    steps:
+      - name: Prepare isolated test toolchain
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl git xz-utils
+          python -m pip install --no-cache-dir uv==0.11.2
+          NODE_ARCHIVE=node-v22.23.1-linux-x64.tar.xz
+          curl --fail --location --silent --show-error --output "/tmp/$NODE_ARCHIVE" "https://nodejs.org/dist/v22.23.1/$NODE_ARCHIVE"
+          echo "9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578  /tmp/$NODE_ARCHIVE" | sha256sum --check --strict
+          mkdir -p /opt/node
+          tar -xJf "/tmp/$NODE_ARCHIVE" --strip-components=1 -C /opt/node
+          /opt/node/bin/node --version
+          /opt/node/bin/npm --version
+
+      - name: Prepare exact-head test checkout
+        env:
+          GITEA_TOKEN: ${{ secrets.REVIEWER_BOT_TOKEN }}
+          REPO: ${{ github.repository }}
+          TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          RUN_ROOT="/tmp/pullback-tests-${TARGET}"
+          rm -rf "$RUN_ROOT"
+          mkdir -p "$RUN_ROOT"
+          git init -q "$RUN_ROOT/work"
+          git -C "$RUN_ROOT/work" remote add origin "https://x:${GITEA_TOKEN}@git.lagoon.cloud/${REPO}.git"
+          git -C "$RUN_ROOT/work" fetch -q --depth=1 origin "$TARGET" \
+            || { sleep 15; git -C "$RUN_ROOT/work" fetch -q --depth=1 origin "$TARGET"; }
+          git -C "$RUN_ROOT/work" remote set-url origin "https://git.lagoon.cloud/${REPO}.git"
+          git -C "$RUN_ROOT/work" checkout -q --detach "$TARGET"
+          test "$(git -C "$RUN_ROOT/work" rev-parse HEAD)" = "$TARGET"
+
+      - name: Run canonical gates without credentials
+        env:
+          TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+          PULLBACK_DATA_DIR: /tmp/pullback-test-data
+          PULLBACK_HTTP_BASIC_USERNAME: ci
+          PULLBACK_HTTP_BASIC_PASSWORD: 0123456789abcdef0123456789abcdef
+        run: |
+          set -euo pipefail
+          export PATH="/opt/node/bin:$PATH"
+          RUN_ROOT="/tmp/pullback-tests-${TARGET}"
+          cd "$RUN_ROOT/work"
+          timeout 600 uv run --project backend --locked --with pytest --with pytest-asyncio pytest -p no:cacheprovider -q
+          timeout 300 npm ci --no-audit --no-fund --prefix frontend
+          timeout 300 npm test --prefix frontend
+          timeout 300 npm run build --prefix frontend
+
+      - name: Clean test workspace
+        if: ${{ always() }}
+        env:
+          TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: rm -rf "/tmp/pullback-tests-${TARGET}" /tmp/pullback-test-data
