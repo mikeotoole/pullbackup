@@ -79,3 +79,35 @@ def test_multi_line_run_blocks_enable_strict_shell_mode():
             "each multi-line run: block must start with `set -eu` so a failing "
             "command aborts the step instead of silently continuing"
         )
+
+
+def test_npm_invocations_have_node_on_path():
+    """Guard the exit-127 failure that skipped every gate after the pipefail fix.
+
+    `npm` ships as a script with a `#!/usr/bin/env node` shebang, so invoking it
+    without /opt/node/bin on PATH fails with
+    "/usr/bin/env: 'node': No such file or directory" (exit 127) even though
+    /opt/node/bin/node itself runs fine.
+    """
+    for script in _run_scripts(WORKFLOW.read_text()):
+        lines = script.splitlines()
+        npm_lines = [
+            index
+            for index, line in enumerate(lines)
+            if re.search(r"(^|[\s/])npm\s", line)
+        ]
+        if not npm_lines:
+            continue
+
+        export_lines = [
+            index
+            for index, line in enumerate(lines)
+            if "/opt/node/bin" in line and "PATH" in line
+        ]
+        assert export_lines, (
+            "a step invoking npm must put /opt/node/bin on PATH; "
+            "npm's env-based shebang fails with exit 127 otherwise"
+        )
+        assert min(export_lines) < min(npm_lines), (
+            "PATH must be extended with /opt/node/bin before the first npm call"
+        )

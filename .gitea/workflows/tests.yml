@@ -5,6 +5,10 @@
 # dash, which rejects `set -o pipefail`. Use `set -eu` and avoid relying on
 # pipefail; put a command whose exit status matters last in any pipeline, or
 # avoid the pipeline entirely.
+#
+# Node is installed to /opt/node, and `npm` is a script with a
+# `#!/usr/bin/env node` shebang. Any step invoking npm must therefore put
+# /opt/node/bin on PATH first, or npm fails with exit 127.
 name: tests
 on:
   pull_request_target:
@@ -30,8 +34,9 @@ jobs:
           sha256sum --check --strict /tmp/node-archive.sha256
           mkdir -p /opt/node
           tar -xJf "/tmp/$NODE_ARCHIVE" --strip-components=1 -C /opt/node
-          /opt/node/bin/node --version
-          /opt/node/bin/npm --version
+          export PATH="/opt/node/bin:$PATH"
+          node --version
+          npm --version
 
       - name: Prepare exact-head test checkout
         env:
