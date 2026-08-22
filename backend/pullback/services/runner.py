@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import signal
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +31,9 @@ _SSH_HOST = re.compile(
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
 )
 _SSH_USER = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+# The kernel resolves this to the inode the descriptor holds, which is why it is
+# immune to a rename/symlink swap of the pathname that was validated.
+FD_PATH_PREFIX = "/proc/self/fd"
 
 
 @dataclass(frozen=True)
@@ -124,11 +127,12 @@ def _source_lock(source_id: int) -> asyncio.Lock:
     return lock
 
 
-def build_rsync_args(task: Task, source: Source) -> list[str]:
-    # Defense in depth: the API rejects an out-of-root destination on write, but a row
-    # persisted before that check existed (or written by any other path) must not reach
-    # rsync. Resolve through the same shared resolver and use its canonical result.
-    destination = fs.resolve_destination(task.local_path)
+def build_rsync_args(task: Task, source: Source, *, destination: fs.PinnedDestination) -> list[str]:
+    # `destination` is an OPEN DESCRIPTOR for the already-validated directory, not a
+    # pathname. rsync is pointed at /proc/self/fd/N, which the kernel resolves to that
+    # exact inode, so a symlink swap landing after validation cannot redirect the
+    # transfer. `destination` is keyword-only and required: there is no pathname
+    # fallback for a caller to reach for.
     args = ["rsync"]
     if task.archive:
         args.append("-a")
@@ -174,7 +178,7 @@ def build_rsync_args(task: Task, source: Source) -> list[str]:
     args.extend(["-e", ssh_cmd])
 
     remote = f"{source.user}@{source.host}:{task.remote_path}"
-    args.extend([remote, str(destination)])
+    args.extend([remote, f"{FD_PATH_PREFIX}/{destination.fileno()}/"])
     return args
 
 
@@ -214,10 +218,54 @@ def build_syncoid_args(task: Task, source: Source) -> list[str]:
     return args
 
 
+def validate_destination(task: Task, source: Source) -> None:
+    """Reject an unsafe destination without writing anything.
+
+    Runs before the concurrency semaphore so a bad row fails fast, and stays
+    side-effect free: a run that is validated but never executed must not leave an
+    empty directory behind. Uses the same no-follow traversal as execution.
+    """
+    if task.task_type == "syncoid":
+        build_syncoid_args(task, source)
+        return
+    pinned = fs.walk_destination(task.local_path, create=False)
+    if pinned is not None:
+        pinned.close()
+
+
 def build_command(task: Task, source: Source) -> list[str]:
+    """Build a command for `task`, validating and materializing its destination.
+
+    For rsync the destination is opened root-relative with no-follow semantics
+    (creating missing components), then closed again. Use this for inspecting the
+    argv; callers that actually execute must use `pinned_command`, which keeps the
+    descriptor open across the exec so the argument cannot dangle.
+    """
     if task.task_type == "syncoid":
         return build_syncoid_args(task, source)
-    return build_rsync_args(task, source)
+    with fs.open_destination(task.local_path, create=True) as destination:
+        return build_rsync_args(task, source, destination=destination)
+
+
+@contextmanager
+def pinned_command(task: Task, source: Source):
+    """Yield `(args, pass_fds)` with the destination descriptor held open.
+
+    The descriptor must outlive `create_subprocess_exec`: rsync resolves
+    `/proc/self/fd/N` in its own process, so the fd has to be inherited and still
+    open at exec time. Closing it earlier would leave a dangling argument.
+    """
+    if task.task_type == "syncoid":
+        # ZFS receive creates its own dataset; there is no filesystem path to pin.
+        yield build_syncoid_args(task, source), ()
+        return
+    # `create=True`: making the directory is itself a write, so it happens through
+    # the same root-relative, no-follow traversal as the transfer.
+    with fs.open_destination(task.local_path, create=True) as destination:
+        yield (
+            build_rsync_args(task, source, destination=destination),
+            (destination.fileno(),),
+        )
 
 
 def validate_zfs_destination(dataset: str) -> str:
@@ -352,7 +400,11 @@ async def _execute_run(run_id: int) -> int:
         source = session.get(Source, task.source_id)
         if not source:
             raise ValueError(f"source {task.source_id} not found")
-        args = build_command(task, source)
+        # Validate the destination before admitting the run to the semaphore, so an
+        # unsafe row fails fast exactly as it did before. This does NOT create the
+        # directory: the handle used for the exec is opened later, in
+        # `pinned_command`, so a run that never executes writes nothing.
+        validate_destination(task, source)
         log_path = settings.log_dir / run.log_filename
 
     async with _global_sem, _source_lock(source.id):
@@ -367,27 +419,30 @@ async def _execute_run(run_id: int) -> int:
             session.add(run)
             session.commit()
 
-        # rsync writes into a filesystem path (create it); syncoid's target is a ZFS
-        # dataset that `zfs receive` creates itself — don't mkdir it.
-        if task.task_type != "syncoid":
-            # Re-resolve rather than reusing task.local_path: creating the directory is
-            # itself a write, so it must go through the same boundary as the command.
-            fs.resolve_destination(task.local_path).mkdir(parents=True, exist_ok=True)
+        # The rsync destination directory is created inside `pinned_command` via the
+        # same root-relative no-follow traversal that produces the handed-to-rsync
+        # descriptor; syncoid's target is a ZFS dataset `zfs receive` creates itself.
 
         exit_code: Optional[int] = None
         proc: Optional[asyncio.subprocess.Process] = None
         cancellation: Optional[asyncio.CancelledError] = None
         try:
-            with open(log_path, "wb") as logf:
-                logf.write(f"# pullback run {run_id} ({task.task_type})\n# args: {' '.join(args)}\n\n".encode())
-                logf.flush()
-                proc = await asyncio.create_subprocess_exec(
-                    *args,
-                    stdout=logf,
-                    stderr=asyncio.subprocess.STDOUT,
-                    start_new_session=True,
-                )
-                exit_code = await proc.wait()
+            # The destination descriptor is opened here and stays open across
+            # `create_subprocess_exec`, because rsync dereferences /proc/self/fd/N
+            # in its own process. For rsync this also performs the no-follow
+            # directory creation that used to be a separate pathname `mkdir`.
+            with pinned_command(task, source) as (args, pass_fds):
+                with open(log_path, "wb") as logf:
+                    logf.write(f"# pullback run {run_id} ({task.task_type})\n# args: {' '.join(args)}\n\n".encode())
+                    logf.flush()
+                    proc = await asyncio.create_subprocess_exec(
+                        *args,
+                        stdout=logf,
+                        stderr=asyncio.subprocess.STDOUT,
+                        start_new_session=True,
+                        pass_fds=pass_fds,
+                    )
+                    exit_code = await proc.wait()
         except asyncio.CancelledError as exc:
             cancellation = exc
             if proc is not None:

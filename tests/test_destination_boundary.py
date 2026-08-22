@@ -249,7 +249,11 @@ def test_valid_persisted_rsync_destination_still_builds_a_command(dest_root):
     task, source = _stored_task(str(dest_root / "task"))
     args = runner.build_command(task, source)
     assert args[0] == "rsync"
-    assert args[-1] == str((dest_root / "task").resolve())
+    # The destination is now a descriptor path, not the mutable pathname: that is
+    # the whole point of the pinning change. It must still resolve to the validated
+    # directory.
+    assert args[-1].startswith(f"{runner.FD_PATH_PREFIX}/")
+    assert str(dest_root / "task") not in args[-1]
 
 
 @pytest.mark.asyncio

@@ -73,11 +73,28 @@ class TaskIn(TaskFields):
             validate_zfs_destination(self.local_path)
         else:
             # rsync writes into the filesystem: the destination must resolve inside a
-            # configured root. Same shared resolver the runner re-checks before exec.
+            # configured root, and no EXISTING component may be a symlink. This is the
+            # same no-follow traversal the runner uses before exec, so the two
+            # boundaries cannot drift; acceptance passes `create=False` because
+            # validating a task must never write to disk.
             try:
-                fs.resolve_destination(self.local_path)
+                pinned = fs.walk_destination(self.local_path, create=False)
             except fs.PathNotAllowed as error:
                 raise ValueError(str(error)) from error
+            except OSError as error:
+                # A component that exists but cannot serve as a directory — a
+                # regular file in the way, a permission denial — is a property
+                # of the destination the client asked for, not an internal
+                # fault. Only PathNotAllowed was converted before, so these
+                # escaped as an unhandled OSError and turned an ordinary bad
+                # request into a 500. The runner deliberately keeps the raw
+                # OSError (it records it on the failed run row for operators);
+                # the translation belongs here, at the client boundary.
+                raise ValueError(
+                    f"destination {self.local_path!r} is not usable: {error}"
+                ) from error
+            if pinned is not None:
+                pinned.close()
         return self
 
 
