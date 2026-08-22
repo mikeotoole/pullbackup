@@ -229,6 +229,12 @@ async def _sync_kuma(t: Task, session: Session, prev_kuma: bool = False, prev_cr
     interval = kuma.cron_interval_seconds(t.cron)
     try:
         if t.kuma_enabled and not t.kuma_monitor_id:
+            # The "pullback: " prefix is the CURRENT product identifier and is
+            # renamed in tranche 2 together with the TaskForm help text that
+            # describes it. tests/test_naming_tranche1.py reads this exact
+            # literal and requires the UI text to agree, so the two cannot
+            # drift and the UI cannot misdescribe monitors that already exist
+            # in a user's Uptime Kuma instance.
             mon_id, token = await k.create_push_monitor(f"pullback: {t.name}", interval)
             t.kuma_monitor_id = mon_id
             t.kuma_push_token = token

@@ -19,7 +19,7 @@ export default function App() {
                 <path d="M8 20.5 V25 H24 V20.5" />
               </g>
             </svg>
-            pullback
+            matera
           </div>
           <nav className="flex gap-4 text-sm">
             <NavLink to="/tasks" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>Tasks</NavLink>

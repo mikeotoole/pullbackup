@@ -281,7 +281,7 @@ export function TaskForm() {
           {sys?.kuma_enabled ? (
             <>
               <Checkbox label="Create Uptime Kuma push monitor for this task" checked={!!form.kuma_enabled} onChange={v => set("kuma_enabled", v)} />
-              <div className="text-xs text-muted">When enabled, pullback creates/updates a Kuma push monitor named <code>pullback: {form.name || "<task>"}</code>. Heartbeat interval tracks the cron schedule.</div>
+              <div className="text-xs text-muted">When enabled, matera creates/updates a Kuma push monitor named <code>pullback: {form.name || "<task>"}</code>. Heartbeat interval tracks the cron schedule. The <code>pullback</code> prefix is the current backend value and changes when the backend rename ships.</div>
             </>
           ) : <div className="text-xs text-muted">Uptime Kuma not configured in env.</div>}
         </Section>
