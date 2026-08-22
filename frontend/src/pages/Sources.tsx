@@ -28,7 +28,7 @@ export function Sources() {
 
       {pubkey && (
         <div className="bg-panel border border-border rounded p-4 space-y-2">
-          <div className="text-sm font-semibold text-muted uppercase tracking-wider">pullback's SSH public key</div>
+          <div className="text-sm font-semibold text-muted uppercase tracking-wider">matera's SSH public key</div>
           <div className="text-xs text-muted">Paste this into <code>~/.ssh/authorized_keys</code> on every source host. Restrict it to read-only paths if you can.</div>
           <pre className="bg-bg border border-border rounded p-3 text-xs overflow-x-auto">{pubkey.public_key || "(generated on first start)"}</pre>
         </div>
