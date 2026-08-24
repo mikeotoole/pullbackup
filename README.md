@@ -1,4 +1,4 @@
-# Matera Backup
+# Pullbackup
 
 Pull-only rsync task manager. Web UI like TrueNAS's "Rsync Tasks" but inverted: the puller holds all credentials, sources never need anything from us.
 
@@ -13,11 +13,11 @@ Pull-only rsync task manager. Web UI like TrueNAS's "Rsync Tasks" but inverted: 
 ## Notifications (per task)
 
 - **Matrix** — checkbox; failures (and optionally successes) post to a configured room.
-- **Uptime Kuma** — checkbox; Matera creates a Kuma push monitor for the task and updates the heartbeat interval whenever the cron changes. Disabled tasks → paused monitor. Deleted tasks → deleted monitor.
+- **Uptime Kuma** — checkbox; Pullbackup creates a Kuma push monitor for the task and updates the heartbeat interval whenever the cron changes. Disabled tasks → paused monitor. Deleted tasks → deleted monitor.
 
 ## Deployment
 
-Built as a single container image and deployed as a Docker Compose stack. Bind-mount the destination roots you want exposed; Matera's filesystem browser is allowlisted to those roots. All UI and API routes except `/api/system/health` require HTTP Basic authentication.
+Built as a single container image and deployed as a Docker Compose stack. Bind-mount the destination roots you want exposed; Pullbackup's filesystem browser is allowlisted to those roots. All UI and API routes except `/api/system/health` require HTTP Basic authentication.
 
 ```
 volumes:
@@ -32,7 +32,7 @@ volumes:
 # Backend
 cd backend
 uv sync
-export PULLBACK_HTTP_BASIC_USERNAME=matera-dev
+export PULLBACK_HTTP_BASIC_USERNAME=pullbackup-dev
 export PULLBACK_HTTP_BASIC_PASSWORD=$(openssl rand -base64 32)
 uv run uvicorn pullback.main:app --reload --port 8000
 
@@ -42,13 +42,14 @@ npm install
 npm run dev   # Vite proxies /api → :8000
 ```
 
-> **Note on naming.** The product is Matera; the Python package, the `PULLBACK_`
-> environment prefix, the container/image identifiers, and the host data
-> directory (`${DOCKER_VOLUMES}/pullback/data`) still carry the former name and
-> are renamed in later changes. Do not rename the host data directory on your
-> own: it holds the SQLite database, run logs, and SSH keys, and pointing the
-> mount at a new path starts the app against an empty directory. The commands
-> and paths above are current and correct.
+> **Note on naming.** The product is Pullbackup. The Python package
+> (`backend/pullback`), the `PULLBACK_` environment prefix, the container/image
+> identifiers, and the host data directory (`${DOCKER_VOLUMES}/pullback/data`)
+> still use the shorter former name and are renamed in later changes. Do not
+> rename the host data directory on your own: it holds the SQLite database, run
+> logs, and SSH keys, and pointing the mount at a new path starts the app
+> against an empty directory. The commands and paths above are current and
+> correct.
 
 ## Env
 
