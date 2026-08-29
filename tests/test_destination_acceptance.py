@@ -7,7 +7,7 @@ that acceptance stays side-effect free.
 """
 
 import pytest
-from pullback.services import fs
+from pullbackup.services import fs
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def dest_root(tmp_path, monkeypatch):
 
 
 def _task_in(local_path, **overrides):
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
 
     fields = dict(
         name="task",
@@ -124,7 +124,7 @@ def test_api_still_rejects_the_configured_root_itself(dest_root):
 
 
 def test_api_leaves_syncoid_validation_alone(dest_root, monkeypatch):
-    from pullback.services import runner
+    from pullbackup.services import runner
 
     monkeypatch.setattr(runner.settings, "zfs_dest_roots", "cache/docker_remote")
     accepted = _task_in(

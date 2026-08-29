@@ -2,8 +2,8 @@ import base64
 
 import httpx
 import pytest
-from pullback import main
-from pullback.config import settings
+from pullbackup import main
+from pullbackup.config import settings
 
 
 def basic_auth(username: str, password: str) -> str:

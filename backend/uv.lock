@@ -576,7 +576,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pullback"
+name = "pullbackup"
 version = "0.5.1"
 source = { editable = "." }
 dependencies = [
@@ -585,6 +585,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic-settings" },
+    { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "python-socketio", extra = ["asyncio-client"] },
     { name = "sqlmodel" },
@@ -599,6 +600,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic-settings", specifier = ">=2.6" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "python-socketio", extras = ["asyncio-client"], specifier = ">=5.11" },
     { name = "sqlmodel", specifier = ">=0.0.22" },

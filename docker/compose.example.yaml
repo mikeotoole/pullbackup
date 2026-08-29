@@ -1,0 +1,82 @@
+# Example Pullbackup deployment.
+#
+# Copy this file, adjust the volumes and destination roots for your host, and
+# supply the environment values from a .env beside it (see ../.env.example).
+#
+# Nothing here is required — Pullbackup is a single container plus one data
+# volume. The extras below (ZFS device access, Traefik labels) are only needed
+# for the features noted against them.
+
+services:
+  pullbackup:
+    image: ghcr.io/OWNER/pullbackup:latest
+    container_name: pullbackup
+    restart: unless-stopped
+    # Modest limits: the container orchestrates rsync/syncoid, it does not do
+    # the data movement in-process.
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    ports:
+      - "8000:8000"
+    environment:
+      TZ: ${TZ:-UTC}
+      PULLBACKUP_DATA_DIR: /data
+      # Comma-separated allowlist. rsync destinations must live beneath one of
+      # these paths; anything else is rejected before a run starts.
+      PULLBACKUP_DEST_ROOTS: /mnt/dest/backups
+      # Only needed for syncoid (ZFS) tasks. Leave blank to disable them.
+      PULLBACKUP_ZFS_DEST_ROOTS: ""
+      PULLBACKUP_MAX_CONCURRENT_RUNS: "1"
+      # Required. The password must be at least 32 characters.
+      PULLBACKUP_HTTP_BASIC_USERNAME: ${PULLBACKUP_HTTP_BASIC_USERNAME:?required}
+      PULLBACKUP_HTTP_BASIC_PASSWORD: ${PULLBACKUP_HTTP_BASIC_PASSWORD:?required}
+      # Optional integrations. Blank disables the feature in the UI.
+      MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
+      MATRIX_TOKEN: ${MATRIX_TOKEN:-}
+      MATRIX_ROOM_ID: ${MATRIX_ROOM_ID:-}
+      UPTIME_KUMA_URL: ${UPTIME_KUMA_URL:-}
+      UPTIME_KUMA_USERNAME: ${UPTIME_KUMA_USERNAME:-}
+      UPTIME_KUMA_PASSWORD: ${UPTIME_KUMA_PASSWORD:-}
+    volumes:
+      # Holds the SQLite database, run logs and the generated SSH key.
+      # Back this up; do not point it at a fresh directory once in use.
+      - ./data:/data
+      # Mount each destination root you listed in PULLBACKUP_DEST_ROOTS.
+      - /srv/backups:/mnt/dest/backups
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import base64,os,urllib.request,sys;
+          credentials=(os.environ["PULLBACKUP_HTTP_BASIC_USERNAME"]+":"+os.environ["PULLBACKUP_HTTP_BASIC_PASSWORD"]).encode();
+          request=urllib.request.Request("http://localhost:8000/api/system/health",headers={"Authorization":"Basic "+base64.b64encode(credentials).decode()});
+          sys.exit(0 if urllib.request.urlopen(request,timeout=3).status==200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+# --- ZFS replication (syncoid tasks) -----------------------------------------
+# Only if you want task_type=syncoid. rsync tasks need none of this.
+# Add to the service above:
+#
+#   privileged: true
+#   devices:
+#     - /dev/zfs:/dev/zfs
+#   volumes:
+#     - /mnt/pool:/mnt/pool:rshared    # rshared so zfs mounts propagate
+#     - /root/.ssh/id_syncoid:/keys/id_syncoid:ro
+#
+# and set PULLBACKUP_ZFS_DEST_ROOTS to the dataset roots you allow, e.g.
+# "tank/replicas".
+
+# --- Reverse proxy ------------------------------------------------------------
+# Example Traefik labels, if you terminate TLS in front of the container:
+#
+#   labels:
+#     - traefik.enable=true
+#     - traefik.http.routers.pullbackup.rule=Host(`pullbackup.example.com`)
+#     - traefik.http.routers.pullbackup.tls=true
+#     - traefik.http.services.pullbackup.loadbalancer.server.port=8000

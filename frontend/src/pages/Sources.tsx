@@ -22,31 +22,33 @@ export function Sources() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Sources</h1>
-        <button className="btn-primary" onClick={() => setEditing({ ...empty })}>+ Add Source</button>
+        <h1 className="text-xl font-semibold">sources</h1>
+        <button className="btn-primary" onClick={() => setEditing({ ...empty })}>+ add source</button>
       </div>
 
       {pubkey && (
         <div className="bg-panel border border-border rounded p-4 space-y-2">
           <div className="text-sm font-semibold text-muted uppercase tracking-wider">pullbackup's SSH public key</div>
           <div className="text-xs text-muted">Paste this into <code>~/.ssh/authorized_keys</code> on every source host. Restrict it to read-only paths if you can.</div>
-          <pre className="bg-bg border border-border rounded p-3 text-xs overflow-x-auto">{pubkey.public_key || "(generated on first start)"}</pre>
+          {/* The key is one long unbreakable token. On a phone, wrapping it is
+              far better than a nested horizontal scroller inside the page. */}
+          <pre className="bg-bg border border-border rounded p-3 text-xs whitespace-pre-wrap break-all sm:whitespace-pre sm:break-normal sm:overflow-x-auto">{pubkey.public_key || "(generated on first start)"}</pre>
         </div>
       )}
 
-      <div className="bg-panel border border-border rounded overflow-x-auto">
+      <div className="bg-panel border border-border rounded hidden sm:block sm:overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-muted text-left">
             <tr className="border-b border-border">
-              <th className="px-4 py-3 font-medium">Name</th>
-              <th className="px-4 py-3 font-medium">User@Host:Port</th>
+              <th className="px-4 py-3 font-medium">name</th>
+              <th className="px-4 py-3 font-medium">user@host:port</th>
               <th className="px-4 py-3 font-medium">SSH key</th>
-              <th className="px-4 py-3 font-medium">Tasks</th>
+              <th className="px-4 py-3 font-medium">tasks</th>
               <th className="px-4 py-3 font-medium w-24"></th>
             </tr>
           </thead>
           <tbody>
-            {sources.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">No sources yet.</td></tr>}
+            {sources.length === 0 && <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">no sources yet.</td></tr>}
             {sources.map(s => (
               <tr key={s.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3">{s.name}</td>
@@ -63,6 +65,37 @@ export function Sources() {
         </table>
       </div>
 
+      {/* Phone view: source cards. user@host:port and the key path are long
+          monospace strings, so they wrap here rather than forcing the whole
+          table sideways. */}
+      <div className="sm:hidden space-y-3">
+        {sources.length === 0 && (
+          <div className="bg-panel border border-border rounded px-4 py-8 text-center text-muted text-sm">no sources yet.</div>
+        )}
+        {sources.map(s => (
+          <div key={s.id} className="bg-panel border border-border rounded p-3 space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 space-y-1">
+                <div className="font-medium">{s.name}</div>
+                <div className="font-mono text-xs text-muted break-all">{s.user}@{s.host}:{s.port}</div>
+              </div>
+              <div className="flex items-center shrink-0">
+                <button aria-label="Edit source" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white" onClick={() => setEditing(s)}>✎</button>
+                <button
+                  aria-label="Delete source"
+                  className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger disabled:opacity-40"
+                  disabled={s.task_count > 0}
+                  title={s.task_count > 0 ? "in use by a task" : "delete source"}
+                  onClick={() => confirm(`Delete source ${s.name}?`) && del.mutate(s.id)}
+                >🗑</button>
+              </div>
+            </div>
+            <div className="font-mono text-xs text-muted break-all">{s.ssh_key_path}</div>
+            <div className="text-xs text-muted border-t border-border pt-2">{s.task_count} task{s.task_count === 1 ? "" : "s"}</div>
+          </div>
+        ))}
+      </div>
+
       {editing && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4" onClick={() => setEditing(null)}>
           <form
@@ -70,16 +103,16 @@ export function Sources() {
             onClick={e => e.stopPropagation()}
             onSubmit={e => { e.preventDefault(); save.mutate(editing); }}
           >
-            <h2 className="text-lg font-semibold">{editing.id ? "Edit" : "New"} source</h2>
-            <Field label="Name"><input value={editing.name ?? ""} onChange={e => setEditing({ ...editing, name: e.target.value })} required /></Field>
-            <Field label="User"><input value={editing.user ?? ""} onChange={e => setEditing({ ...editing, user: e.target.value })} required /></Field>
-            <Field label="Host"><input value={editing.host ?? ""} onChange={e => setEditing({ ...editing, host: e.target.value })} required /></Field>
-            <Field label="Port"><input type="number" value={editing.port ?? 22} onChange={e => setEditing({ ...editing, port: Number(e.target.value) })} /></Field>
+            <h2 className="text-lg font-semibold">{editing.id ? "edit" : "new"} source</h2>
+            <Field label="name"><input value={editing.name ?? ""} onChange={e => setEditing({ ...editing, name: e.target.value })} required /></Field>
+            <Field label="user"><input value={editing.user ?? ""} onChange={e => setEditing({ ...editing, user: e.target.value })} required /></Field>
+            <Field label="host"><input value={editing.host ?? ""} onChange={e => setEditing({ ...editing, host: e.target.value })} required /></Field>
+            <Field label="port"><input type="number" value={editing.port ?? 22} onChange={e => setEditing({ ...editing, port: Number(e.target.value) })} /></Field>
             <Field label="SSH key path (inside container)"><input value={editing.ssh_key_path ?? ""} onChange={e => setEditing({ ...editing, ssh_key_path: e.target.value })} required /></Field>
-            <Field label="Description"><textarea rows={2} value={editing.description ?? ""} onChange={e => setEditing({ ...editing, description: e.target.value })} /></Field>
+            <Field label="description"><textarea rows={2} value={editing.description ?? ""} onChange={e => setEditing({ ...editing, description: e.target.value })} /></Field>
             <div className="flex justify-end gap-2">
-              <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>Cancel</button>
-              <button type="submit" className="btn-primary" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</button>
+              <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>cancel</button>
+              <button type="submit" className="btn-primary" disabled={save.isPending}>{save.isPending ? "saving…" : "save"}</button>
             </div>
           </form>
         </div>

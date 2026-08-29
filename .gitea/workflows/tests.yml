@@ -64,9 +64,9 @@ jobs:
         env:
           TARGET: ${{ github.event.pull_request.head.sha || github.sha }}
           UV_LINK_MODE: copy
-          PULLBACK_DATA_DIR: /tmp/pullback-test-data
-          PULLBACK_HTTP_BASIC_USERNAME: ci
-          PULLBACK_HTTP_BASIC_PASSWORD: 0123456789abcdef0123456789abcdef
+          PULLBACKUP_DATA_DIR: /tmp/pullback-test-data
+          PULLBACKUP_HTTP_BASIC_USERNAME: ci
+          PULLBACKUP_HTTP_BASIC_PASSWORD: 0123456789abcdef0123456789abcdef
         run: |
           set -eu
           export PATH="/opt/node/bin:$PATH"

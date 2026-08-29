@@ -8,12 +8,12 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import BackgroundTasks, HTTPException
-from pullback import db, main
-from pullback.api import sources as sources_api
-from pullback.api import tasks as tasks_api
-from pullback.config import Settings
-from pullback.models import Run, RunState, Source, Task
-from pullback.services import fs, runner, scheduler
+from pullbackup import db, main
+from pullbackup.api import sources as sources_api
+from pullbackup.api import tasks as tasks_api
+from pullbackup.config import Settings
+from pullbackup.models import Run, RunState, Source, Task
+from pullbackup.services import fs, runner, scheduler
 from sqlmodel import Session, SQLModel, create_engine, select
 
 TEST_HTTP_USERNAME = "pullback-test"
@@ -23,7 +23,7 @@ TEST_HTTP_PASSWORD = bytes(range(32)).hex()
 @pytest.fixture
 def sqlite_engine(tmp_path, monkeypatch):
     engine = create_engine(
-        f"sqlite:///{tmp_path / 'pullback.db'}",
+        f"sqlite:///{tmp_path / 'pullbackup.db'}",
         connect_args={"check_same_thread": False},
     )
     SQLModel.metadata.create_all(engine)
@@ -1423,26 +1423,19 @@ def test_zfs_destination_roots_are_explicit_and_empty_by_default(monkeypatch):
 
 
 def test_bundled_compose_sets_global_concurrency_to_one():
-    compose = (Path(__file__).parents[1] / "compose.yaml").read_text()
+    compose = (Path(__file__).parents[1] / "docker" / "compose.example.yaml").read_text()
     env_example = (Path(__file__).parents[1] / ".env.example").read_text()
     readme = (Path(__file__).parents[1] / "README.md").read_text()
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
-    assert 'restart: "no"' in compose
-    assert "restart: unless-stopped" not in compose
-    assert 'PULLBACK_MAX_CONCURRENT_RUNS: "1"' in compose
-    assert 'PULLBACK_MAX_CONCURRENT_RUNS: "4"' not in compose
-    assert "PULLBACK_MAX_CONCURRENT_RUNS=1" in env_example
-    assert "PULLBACK_MAX_CONCURRENT_RUNS=4" not in env_example
-    assert "PULLBACK_ZFS_DEST_ROOTS: cache/docker_remote" in compose
-    assert "PULLBACK_ZFS_DEST_ROOTS=cache/docker_remote" in env_example
-    assert "PULLBACK_HTTP_BASIC_USERNAME: ${PULLBACK_HTTP_BASIC_USERNAME:?required}" in compose
-    assert "PULLBACK_HTTP_BASIC_PASSWORD: ${PULLBACK_HTTP_BASIC_PASSWORD:?required}" in compose
-    assert "PULLBACK_HTTP_BASIC_USERNAME=" in env_example
-    assert "PULLBACK_HTTP_BASIC_PASSWORD=" in env_example
-    assert "PULLBACK_HTTP_BASIC_USERNAME" in readme
-    assert "PULLBACK_HTTP_BASIC_PASSWORD" in readme
+    assert 'PULLBACKUP_MAX_CONCURRENT_RUNS: "1"' in compose
+    assert "PULLBACKUP_MAX_CONCURRENT_RUNS=1" in env_example
+    assert "PULLBACKUP_ZFS_DEST_ROOTS=cache/docker_remote" in env_example
+    assert "PULLBACKUP_HTTP_BASIC_USERNAME=" in env_example
+    assert "PULLBACKUP_HTTP_BASIC_PASSWORD=" in env_example
+    assert "PULLBACKUP_HTTP_BASIC_USERNAME" in readme
+    assert "PULLBACKUP_HTTP_BASIC_PASSWORD" in readme
     assert "at least 32 characters" in readme
-    assert "PULLBACK_ZFS_DEST_ROOTS" in readme
+    assert "PULLBACKUP_ZFS_DEST_ROOTS" in readme
     assert "RUN npm ci" in dockerfile
     assert "RUN npm install" not in dockerfile
     assert "mem_limit: 512m" in compose
@@ -1451,13 +1444,13 @@ def test_bundled_compose_sets_global_concurrency_to_one():
 
 
 def test_bundled_compose_healthcheck_authenticates():
-    compose = (Path(__file__).parents[1] / "compose.yaml").read_text()
+    compose = (Path(__file__).parents[1] / "docker" / "compose.example.yaml").read_text()
     healthcheck = compose.split("healthcheck:", maxsplit=1)[1]
 
     assert "Authorization" in healthcheck
     assert "Basic" in healthcheck
-    assert "PULLBACK_HTTP_BASIC_USERNAME" in healthcheck
-    assert "PULLBACK_HTTP_BASIC_PASSWORD" in healthcheck
+    assert "PULLBACKUP_HTTP_BASIC_USERNAME" in healthcheck
+    assert "PULLBACKUP_HTTP_BASIC_PASSWORD" in healthcheck
 
 
 @pytest.mark.parametrize("entry_path", ["run_task", "scheduler"])

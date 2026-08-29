@@ -2,11 +2,11 @@
 
 The rsync destination (`Task.local_path`) is attacker-influenced data that becomes a
 filesystem write target. These tests pin the shared canonical resolver in
-`pullback.services.fs`, the API acceptance boundary, and the pre-execution check.
+`pullbackup.services.fs`, the API acceptance boundary, and the pre-execution check.
 """
 
 import pytest
-from pullback.services import fs
+from pullbackup.services import fs
 
 
 @pytest.fixture
@@ -139,7 +139,7 @@ def test_resolve_destination_rejects_a_nested_root_shadowed_by_an_outer_root(
 def test_task_input_rejects_an_rsync_destination_outside_the_roots(
     dest_root, outside
 ):
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
 
     with pytest.raises(ValueError):
         tasks_api.TaskIn(
@@ -152,7 +152,7 @@ def test_task_input_rejects_an_rsync_destination_outside_the_roots(
 
 
 def test_task_input_rejects_the_configured_root_itself(dest_root):
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
 
     with pytest.raises(ValueError):
         tasks_api.TaskIn(
@@ -165,7 +165,7 @@ def test_task_input_rejects_the_configured_root_itself(dest_root):
 
 
 def test_task_input_rejects_a_symlinked_rsync_destination(dest_root, tmp_path):
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -182,7 +182,7 @@ def test_task_input_rejects_a_symlinked_rsync_destination(dest_root, tmp_path):
 
 
 def test_task_input_accepts_a_valid_rsync_destination(dest_root):
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
 
     accepted = tasks_api.TaskIn(
         name="valid",
@@ -197,8 +197,8 @@ def test_task_input_accepts_a_valid_rsync_destination(dest_root):
 def test_task_input_does_not_apply_the_filesystem_root_check_to_syncoid(
     dest_root, monkeypatch
 ):
-    from pullback.api import tasks as tasks_api
-    from pullback.services import runner
+    from pullbackup.api import tasks as tasks_api
+    from pullbackup.services import runner
 
     monkeypatch.setattr(runner.settings, "zfs_dest_roots", "cache/docker_remote")
     accepted = tasks_api.TaskIn(
@@ -213,7 +213,7 @@ def test_task_input_does_not_apply_the_filesystem_root_check_to_syncoid(
 
 
 def _stored_task(local_path):
-    from pullback.models import Source, Task
+    from pullbackup.models import Source, Task
 
     source = Source(
         id=1,
@@ -236,7 +236,7 @@ def _stored_task(local_path):
 def test_persisted_rsync_destination_is_revalidated_before_the_command(
     dest_root, tmp_path
 ):
-    from pullback.services import runner
+    from pullbackup.services import runner
 
     task, source = _stored_task(str(tmp_path / "outside" / "task"))
     with pytest.raises(fs.PathNotAllowed):
@@ -244,7 +244,7 @@ def test_persisted_rsync_destination_is_revalidated_before_the_command(
 
 
 def test_valid_persisted_rsync_destination_still_builds_a_command(dest_root):
-    from pullback.services import runner
+    from pullbackup.services import runner
 
     task, source = _stored_task(str(dest_root / "task"))
     args = runner.build_command(task, source)
@@ -262,7 +262,7 @@ async def test_unsafe_persisted_destination_starts_no_rsync_and_creates_no_direc
 ):
     import asyncio as _asyncio
 
-    from pullback.services import runner
+    from pullbackup.services import runner
 
     outside = tmp_path / "outside" / "task"
 
@@ -288,7 +288,7 @@ async def test_unsafe_persisted_destination_starts_no_rsync_and_creates_no_direc
 
 
 def _persist_legacy_task(engine, local_path):
-    from pullback.models import Source, Task
+    from pullbackup.models import Source, Task
     from sqlmodel import Session
 
     with Session(engine) as session:
@@ -316,8 +316,8 @@ def _persist_legacy_task(engine, local_path):
 
 @pytest.fixture
 def legacy_engine(tmp_path, monkeypatch, dest_root):
-    from pullback import db
-    from pullback.services import runner, scheduler
+    from pullbackup import db
+    from pullbackup.services import runner, scheduler
     from sqlmodel import SQLModel, create_engine
 
     engine = create_engine(
@@ -336,8 +336,8 @@ def test_task_out_can_be_built_for_a_persisted_out_of_root_destination(
     legacy_engine, tmp_path
 ):
     """A legacy row must still serialize; enforcement belongs on the write path."""
-    from pullback.api import tasks as tasks_api
-    from pullback.models import Task
+    from pullbackup.api import tasks as tasks_api
+    from pullbackup.models import Task
     from sqlmodel import Session
 
     unsafe = str(tmp_path / "outside" / "legacy")
@@ -353,7 +353,7 @@ def test_task_out_can_be_built_for_a_persisted_out_of_root_destination(
 def test_task_list_still_returns_a_persisted_out_of_root_destination(
     legacy_engine, tmp_path
 ):
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
     from sqlmodel import Session
 
     unsafe = str(tmp_path / "outside" / "legacy")
@@ -369,7 +369,7 @@ def test_task_input_still_rejects_that_same_out_of_root_destination(
     dest_root, tmp_path
 ):
     """Read tolerance must not weaken the write boundary."""
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
 
     with pytest.raises(ValueError):
         tasks_api.TaskIn(
@@ -425,7 +425,7 @@ def test_task_input_rejects_a_runtime_error_destination_as_a_value_error(
     """A resolution failure must be a normal 422 rejection, never an internal error."""
     from pathlib import Path
 
-    from pullback.api import tasks as tasks_api
+    from pullbackup.api import tasks as tasks_api
 
     def exploding_resolve(self, *args, **kwargs):
         raise RuntimeError("Symlink loop from 'x'")

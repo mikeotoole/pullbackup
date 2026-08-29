@@ -1,8 +1,20 @@
+import socket
 import subprocess
 from pathlib import Path
 from ..config import settings
 
 DEFAULT_KEY_NAME = "id_ed25519"
+
+
+def key_comment() -> str:
+    """Comment baked into the generated public key.
+
+    Derived from the running host rather than hardcoded: the public key is
+    pasted into authorized_keys on every source machine, so a literal
+    deployment hostname would be published to anyone running this.
+    """
+    host = socket.gethostname().strip() or "host"
+    return f"pullbackup@{host}"
 
 
 def ensure_default_key() -> Path:
@@ -12,7 +24,7 @@ def ensure_default_key() -> Path:
     if priv.exists():
         return priv
     subprocess.run(
-        ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", "pullback@seal", "-f", str(priv)],
+        ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", key_comment(), "-f", str(priv)],
         check=True,
         capture_output=True,
     )
