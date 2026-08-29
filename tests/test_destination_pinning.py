@@ -11,7 +11,7 @@ import os
 
 import pytest
 from pydantic import ValidationError
-from pullback.services import fs
+from pullbackup.services import fs
 
 
 @pytest.fixture
@@ -294,7 +294,7 @@ def test_unusable_component_is_rejected_by_the_api_validator(dest_root):
     in a `ValidationError`, which subclasses `ValueError`. Assert on the message
     and the cause chain so the test can actually fail.
     """
-    from pullback.api.tasks import TaskIn
+    from pullbackup.api.tasks import TaskIn
 
     blocker = dest_root / "team"
     blocker.write_text("not a directory")
@@ -351,7 +351,7 @@ def test_unsearchable_component_is_rejected_by_the_api_validator(dest_root):
     """And it must reach the client as a validation error, not a 500."""
     if os.geteuid() == 0:
         pytest.skip("root bypasses search permission checks")
-    from pullback.api.tasks import TaskIn
+    from pullbackup.api.tasks import TaskIn
 
     locked = dest_root / "locked-api"
     (locked / "child").mkdir(parents=True)

@@ -16,8 +16,8 @@ import shutil
 import subprocess
 
 import pytest
-from pullback.models import Run, RunState, Source, Task
-from pullback.services import fs, runner
+from pullbackup.models import Run, RunState, Source, Task
+from pullbackup.services import fs, runner
 from sqlmodel import Session, SQLModel, create_engine
 
 HAVE_PROC_FD = os.path.isdir("/proc/self/fd")

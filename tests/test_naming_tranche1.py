@@ -90,7 +90,7 @@ def test_kuma_help_text_describes_the_real_monitor_prefix():
     already exist in a user's Uptime Kuma instance.
     """
     backend_call = (
-        REPOSITORY_ROOT / "backend" / "pullback" / "api" / "tasks.py"
+        REPOSITORY_ROOT / "backend" / "pullbackup" / "api" / "tasks.py"
     ).read_text()
     match = re.search(r'create_push_monitor\(\s*f"([^:"]+):', backend_call)
     assert match, "could not locate the Kuma monitor name construction"
@@ -129,11 +129,10 @@ def _readme_prose():
 
 def test_readme_has_no_bare_old_product_branding():
     """The README legitimately still contains the old name inside identifiers:
-    ``PULLBACK_`` env vars, the ``pullback.main:app`` dev command, the
-    ``backend/pullback`` package path, and the
-    ``${DOCKER_VOLUMES}/pullback/data`` host path. All are current, working
-    identifiers that later tranches rename. What must be gone is *product*
-    branding — prose calling the tool itself "pullback".
+    the host data directory (``${DOCKER_VOLUMES}/pullback/data``) and the
+    database filename (``pullback.db``) inside it. Both are real, current
+    identifiers that a deliberate migration renames later. What must be gone is
+    *product* branding — prose calling the tool itself "pullback".
     """
     prose = _readme_prose()
     # Strip every legitimate identifier occurrence. `PULLBACK_` appears both as
@@ -142,10 +141,9 @@ def test_readme_has_no_bare_old_product_branding():
     residue = prose.replace("`PULLBACK_`", "")
     residue = re.sub(r"PULLBACK_[A-Z_]+", "", residue)
     for identifier in (
-        "pullback.main:app",
         "${DOCKER_VOLUMES}/pullback/data:/data",
         "${DOCKER_VOLUMES}/pullback/data",
-        "backend/pullback",
+        "pullback.db",
     ):
         residue = residue.replace(identifier, "")
 

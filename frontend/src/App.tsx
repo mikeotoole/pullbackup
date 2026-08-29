@@ -9,7 +9,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-border bg-panel">
-        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-6">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
           <div className="flex items-center gap-2 font-semibold text-lg">
             <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
               <rect width="32" height="32" rx="7" fill="#7c3aed" />
@@ -22,12 +22,12 @@ export default function App() {
             pullbackup
           </div>
           <nav className="flex gap-4 text-sm">
-            <NavLink to="/tasks" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>Tasks</NavLink>
-            <NavLink to="/sources" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>Sources</NavLink>
+            <NavLink to="/tasks" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>tasks</NavLink>
+            <NavLink to="/sources" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>sources</NavLink>
           </nav>
         </div>
       </header>
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
         <Routes>
           <Route path="/" element={<Navigate to="/tasks" replace />} />
           <Route path="/tasks" element={<TasksList />} />

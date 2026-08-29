@@ -7,7 +7,12 @@ body {
 }
 
 input, select, textarea {
-  @apply bg-bg border border-border rounded px-3 py-2 text-white;
+  @apply w-full bg-bg border border-border rounded px-3 py-2 text-white;
+}
+
+/* Checkboxes are sized explicitly and must not stretch. */
+input[type="checkbox"], input[type="radio"] {
+  @apply w-auto;
 }
 
 input:focus, select:focus, textarea:focus {

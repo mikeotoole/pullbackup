@@ -139,63 +139,65 @@ export function TaskForm() {
       className="space-y-6"
       onSubmit={e => { e.preventDefault(); save.mutate(); }}
     >
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{editing ? "Edit" : "Add"} Task</h1>
-        <div className="space-x-2">
-          <button type="button" className="btn-ghost" onClick={() => nav("/tasks")}>Cancel</button>
-          <button type="submit" className="btn-primary" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save"}</button>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">{editing ? "edit" : "add"} task</h1>
+        <div className="flex gap-2">
+          <button type="button" className="btn-ghost" onClick={() => nav("/tasks")}>cancel</button>
+          <button type="submit" className="btn-primary" disabled={save.isPending}>{save.isPending ? "saving…" : "save"}</button>
         </div>
       </div>
       {save.error && <div className="bg-danger/20 border border-danger text-danger px-3 py-2 rounded text-sm">{String((save.error as Error).message)}</div>}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Section title="Source">
-          <Field label="Type">
+        <Section title="source">
+          <Field label="type">
             <select value={form.task_type ?? "rsync"} onChange={e => set("task_type", e.target.value)}>
               <option value="rsync">rsync (files)</option>
               <option value="syncoid">syncoid (ZFS replication)</option>
             </select>
           </Field>
-          <Field label="Name">
+          <Field label="name">
             <input value={form.name ?? ""} onChange={e => set("name", e.target.value)} required />
           </Field>
-          <Field label="Source host">
+          <Field label="source host">
             <select value={form.source_id ?? 0} onChange={e => set("source_id", Number(e.target.value))} required>
-              <option value={0} disabled>Choose…</option>
+              <option value={0} disabled>choose…</option>
               {sources.map(s => <option key={s.id} value={s.id}>{s.name} ({s.user}@{s.host})</option>)}
             </select>
           </Field>
-          <Field label={isSyncoid ? "Remote dataset" : "Remote path"}>
+          <Field label={isSyncoid ? "remote dataset" : "remote path"}>
             <input value={form.remote_path ?? ""} onChange={e => set("remote_path", e.target.value)} required placeholder={isSyncoid ? "pool0/docker/eel" : "/mnt/pool0/dataset"} />
           </Field>
           {isSyncoid ? (
-            <Field label="Local dataset">
+            <Field label="local dataset">
               <input value={form.local_path ?? ""} onChange={e => set("local_path", e.target.value)} required placeholder="cache/docker_remote/eel" />
-              <div className="text-xs text-muted mt-1">Local ZFS dataset name (no <span className="font-mono">/mnt</span>, no leading slash). <span className="font-mono">zfs receive</span> creates it.</div>
+              <div className="text-xs text-muted mt-1">local ZFS dataset name (no <span className="font-mono">/mnt</span>, no leading slash). <span className="font-mono">zfs receive</span> creates it.</div>
             </Field>
           ) : (
-            <Field label="Local path">
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,2fr)] gap-2 items-center">
+            <Field label="local path">
+              {/* Stacks on a phone: at 375px a 3-across select / "/" / input
+                  squeezes the dest-root select to a few unreadable characters. */}
+              <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,2fr)] gap-2 items-center">
                 <select value={rootChoice} onChange={e => setLocalParts(e.target.value, subdir)}>
                   {roots.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
-                <span className="text-muted">/</span>
+                <span className="text-muted hidden sm:inline">/</span>
                 <input
                   value={subdir}
                   onChange={e => setLocalParts(rootChoice, e.target.value)}
                   placeholder="subdir/path (optional)"
                 />
               </div>
-              <div className="text-xs text-muted mt-1">Resolves to: <span className="font-mono">{form.local_path || "—"}</span></div>
+              <div className="text-xs text-muted mt-1">resolves to: <span className="font-mono">{form.local_path || "—"}</span></div>
             </Field>
           )}
-          <Field label="Description">
+          <Field label="description">
             <textarea rows={2} value={form.description ?? ""} onChange={e => set("description", e.target.value)} />
           </Field>
         </Section>
 
-        <Section title="Schedule">
-          <Field label={`Cron (${sys?.tz ?? "UTC"})`}>
+        <Section title="schedule">
+          <Field label={`cron (${sys?.tz ?? "UTC"})`}>
             <input value={form.cron ?? ""} onChange={e => set("cron", e.target.value)} required placeholder="m h dom mon dow" />
             {(() => {
               const d = describeCron(form.cron);
@@ -206,20 +208,20 @@ export function TaskForm() {
               );
             })()}
             <div className="text-xs text-muted mt-1 flex gap-2 flex-wrap items-center">
-              <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextHourlyCron(allTasks))}>Next free hourly</button>
-              <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextDailyCron(allTasks))}>Next free daily</button>
+              <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextHourlyCron(allTasks))}>next free hourly</button>
+              <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => set("cron", nextDailyCron(allTasks))}>next free daily</button>
               <span className="text-muted">5-field cron. Suggestions pick a minute/hour no other enabled task uses.</span>
             </div>
           </Field>
-          <Checkbox label="Enabled" checked={!!form.enabled} onChange={v => set("enabled", v)} />
+          <Checkbox label="enabled" checked={!!form.enabled} onChange={v => set("enabled", v)} />
         </Section>
 
-        <Section title={isSyncoid ? "Syncoid options" : "Rsync options"}>
+        <Section title={isSyncoid ? "syncoid options" : "rsync options"}>
           {isSyncoid && <>
-            <Checkbox label="Recursive (--recursive)" checked={!!form.syncoid_recursive} onChange={v => set("syncoid_recursive", v)} />
-            <Checkbox label="No sync snapshot (--no-sync-snap)" checked={!!form.syncoid_no_sync_snap} onChange={v => set("syncoid_no_sync_snap", v)} />
+            <Checkbox label="recursive (--recursive)" checked={!!form.syncoid_recursive} onChange={v => set("syncoid_recursive", v)} />
+            <Checkbox label="no sync snapshot (--no-sync-snap)" checked={!!form.syncoid_no_sync_snap} onChange={v => set("syncoid_no_sync_snap", v)} />
             <Checkbox
-              label="Replicate from scratch (--force-delete) — destroys & recreates the target"
+              label="replicate from scratch (--force-delete) — destroys & recreates the target"
               checked={!!form.syncoid_force_full}
               onChange={v => set("syncoid_force_full", v)}
             />
@@ -229,7 +231,7 @@ export function TaskForm() {
                 replica is out of sync (“no snapshots matching”). Turn back off once it’s tracking.
               </p>
             )}
-            <Field label="Compression (--compress)">
+            <Field label="compression (--compress)">
               <select value={form.syncoid_compress ?? ""} onChange={e => set("syncoid_compress", e.target.value)}>
                 <option value="">default</option>
                 <option value="none">none</option>
@@ -238,49 +240,49 @@ export function TaskForm() {
                 <option value="gzip">gzip</option>
               </select>
             </Field>
-            <Field label="Prune: keep N newest hourly snaps on dest (blank = no prune)">
+            <Field label="prune: keep N newest hourly snaps on dest (blank = no prune)">
               <input type="number" value={form.prune_keep_hourly ?? ""} onChange={e => set("prune_keep_hourly", e.target.value ? Number(e.target.value) : null)} placeholder="e.g. 24" />
             </Field>
-            <Field label="Extra syncoid args (raw)">
+            <Field label="extra syncoid args (raw)">
               <input value={form.syncoid_extra_args ?? ""} onChange={e => set("syncoid_extra_args", e.target.value)} placeholder="--no-privilege-elevation --mbuffer-size=128M" />
             </Field>
           </>}
           {!isSyncoid && <>
-          <Checkbox label="Archive (-a)" checked={!!form.archive} onChange={v => set("archive", v)} />
+          <Checkbox label="archive (-a)" checked={!!form.archive} onChange={v => set("archive", v)} />
           {!form.archive && <>
-            <Checkbox label="Recursive (-r)" checked={!!form.recursive} onChange={v => set("recursive", v)} />
-            <Checkbox label="Times (-t)" checked={!!form.times} onChange={v => set("times", v)} />
-            <Checkbox label="Preserve permissions (-p)" checked={!!form.preserve_permissions} onChange={v => set("preserve_permissions", v)} />
+            <Checkbox label="recursive (-r)" checked={!!form.recursive} onChange={v => set("recursive", v)} />
+            <Checkbox label="times (-t)" checked={!!form.times} onChange={v => set("times", v)} />
+            <Checkbox label="preserve permissions (-p)" checked={!!form.preserve_permissions} onChange={v => set("preserve_permissions", v)} />
           </>}
-          <Checkbox label="Compress (-z)" checked={!!form.compress} onChange={v => set("compress", v)} />
-          <Checkbox label="Preserve xattrs (-X)" checked={!!form.preserve_xattrs} onChange={v => set("preserve_xattrs", v)} />
-          <Checkbox label="Delete extraneous on destination (--delete)" checked={!!form.delete} onChange={v => set("delete", v)} />
-          <Checkbox label="Quiet (-q)" checked={!!form.quiet} onChange={v => set("quiet", v)} />
-          <Checkbox label="Delay updates (--delay-updates)" checked={!!form.delay_updates} onChange={v => set("delay_updates", v)} />
-          <Checkbox label="Use sudo on remote (read root-owned files)" checked={!!form.use_sudo} onChange={v => set("use_sudo", v)} />
-          <Field label="Bandwidth limit (KB/s)">
+          <Checkbox label="compress (-z)" checked={!!form.compress} onChange={v => set("compress", v)} />
+          <Checkbox label="preserve xattrs (-X)" checked={!!form.preserve_xattrs} onChange={v => set("preserve_xattrs", v)} />
+          <Checkbox label="delete extraneous on destination (--delete)" checked={!!form.delete} onChange={v => set("delete", v)} />
+          <Checkbox label="quiet (-q)" checked={!!form.quiet} onChange={v => set("quiet", v)} />
+          <Checkbox label="delay updates (--delay-updates)" checked={!!form.delay_updates} onChange={v => set("delay_updates", v)} />
+          <Checkbox label="use sudo on remote (read root-owned files)" checked={!!form.use_sudo} onChange={v => set("use_sudo", v)} />
+          <Field label="bandwidth limit (KB/s)">
             <input type="number" value={form.bwlimit_kbps ?? ""} onChange={e => set("bwlimit_kbps", e.target.value ? Number(e.target.value) : null)} />
           </Field>
-          <Field label="Exclude patterns (one per line)">
+          <Field label="exclude patterns (one per line)">
             <textarea rows={3} value={form.exclude_patterns ?? ""} onChange={e => set("exclude_patterns", e.target.value)} />
           </Field>
-          <Field label="Auxiliary args (raw)">
+          <Field label="auxiliary args (raw)">
             <input value={form.aux_args ?? ""} onChange={e => set("aux_args", e.target.value)} placeholder="--rsync-path='sudo /usr/bin/rsync'" />
           </Field>
           </>}
         </Section>
 
-        <Section title="Notifications">
+        <Section title="notifications">
           {sys?.matrix_enabled ? (
             <>
-              <Checkbox label="Send Matrix message on failure" checked={!!form.notify_matrix} onChange={v => set("notify_matrix", v)} />
+              <Checkbox label="send Matrix message on failure" checked={!!form.notify_matrix} onChange={v => set("notify_matrix", v)} />
               <Checkbox label="…also on success" checked={!!form.notify_matrix_on_success} onChange={v => set("notify_matrix_on_success", v)} disabled={!form.notify_matrix} />
             </>
           ) : <div className="text-xs text-muted">Matrix not configured in env.</div>}
 
           {sys?.kuma_enabled ? (
             <>
-              <Checkbox label="Create Uptime Kuma push monitor for this task" checked={!!form.kuma_enabled} onChange={v => set("kuma_enabled", v)} />
+              <Checkbox label="create Uptime Kuma push monitor for this task" checked={!!form.kuma_enabled} onChange={v => set("kuma_enabled", v)} />
               <div className="text-xs text-muted">When enabled, pullbackup creates/updates a Kuma push monitor named <code>pullback: {form.name || "<task>"}</code>. Heartbeat interval tracks the cron schedule. The <code>pullback</code> prefix is the current backend value and changes when the backend rename ships.</div>
             </>
           ) : <div className="text-xs text-muted">Uptime Kuma not configured in env.</div>}

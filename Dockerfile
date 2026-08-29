@@ -24,19 +24,20 @@ RUN sed -i 's/ main/ main contrib/' /etc/apt/sources.list /etc/apt/sources.list.
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+# Install from the packaging metadata rather than a hand-maintained list.
+# The duplicated list previously drifted: config.py gained a python-dotenv
+# import that pyproject.toml declared but this file did not install, so the
+# image raised ModuleNotFoundError at startup. Installing the project itself
+# makes that class of drift impossible.
 COPY backend/pyproject.toml ./pyproject.toml
-RUN pip install --no-cache-dir \
-        "fastapi>=0.115" "uvicorn[standard]>=0.32" "sqlmodel>=0.0.22" \
-        "apscheduler>=3.10" "croniter>=3.0" "pydantic-settings>=2.6" \
-        "httpx>=0.27" "python-socketio[asyncio_client]>=5.11" \
-        "sse-starlette>=2.1" "python-multipart>=0.0.12"
+COPY backend/pullbackup ./pullbackup
+RUN pip install --no-cache-dir .
 
-COPY backend/pullback ./pullback
 COPY --from=frontend /fe/dist ./static
 
-ENV PULLBACK_DATA_DIR=/data
+ENV PULLBACKUP_DATA_DIR=/data
 VOLUME ["/data"]
 EXPOSE 8000
 
 ENTRYPOINT ["tini", "--"]
-CMD ["uvicorn", "pullback.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "pullbackup.main:app", "--host", "0.0.0.0", "--port", "8000"]
