@@ -33,7 +33,10 @@ COPY backend/pyproject.toml ./pyproject.toml
 # AGPL-3.0 sections 4 and 6 require that whoever conveys the work — including
 # object code — give recipients a copy of the licence. The image declares
 # License-Expression: AGPL-3.0-or-later, so it must carry the text too.
+# NOTICE travels with it: the FSF licence body names no copyright holder, so a
+# recipient who got LICENSE alone would hold a licence with no licensor.
 COPY LICENSE ./LICENSE
+COPY NOTICE ./NOTICE
 COPY backend/pullbackup ./pullbackup
 RUN pip install --no-cache-dir .
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Mike O'Toole
 """Uptime Kuma push-monitor management via Socket.IO.
 
 Kuma has no REST mutation API — Socket.IO is the only path for create/edit/delete.
