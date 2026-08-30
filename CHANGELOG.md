@@ -12,6 +12,13 @@ version yet.
 
 ### Added
 
+- **Licensed under AGPL-3.0-or-later.** Pullbackup is server software you
+  self-host; section 13 obliges anyone who modifies it and offers it to others
+  over a network to publish their source. Running an unmodified copy carries no
+  such obligation.
+- A login page and signed `HttpOnly` cookie session over the existing HTTP
+  Basic credential. Basic auth still works for scripted access and the compose
+  healthcheck, and `PULLBACKUP_SESSION_SECRET` optionally pins the signing key.
 - Card layouts for the task, run-history and source lists below the `sm`
   breakpoint, replacing horizontal scrolling on phones.
 - `PULLBACKUP_DB_FILENAME` to override the SQLite filename inside the data
