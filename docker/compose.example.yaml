@@ -29,8 +29,14 @@ services:
       PULLBACKUP_ZFS_DEST_ROOTS: ""
       PULLBACKUP_MAX_CONCURRENT_RUNS: "1"
       # Required. The password must be at least 32 characters.
+      # The UI signs in with these at /login and then uses a session cookie;
+      # the same values keep working as HTTP Basic for scripted access and for
+      # the healthcheck below.
       PULLBACKUP_HTTP_BASIC_USERNAME: ${PULLBACKUP_HTTP_BASIC_USERNAME:?required}
       PULLBACKUP_HTTP_BASIC_PASSWORD: ${PULLBACKUP_HTTP_BASIC_PASSWORD:?required}
+      # Optional. Signs session cookies. Unset means the key is derived from
+      # the password above, so changing the password signs everyone out.
+      PULLBACKUP_SESSION_SECRET: ${PULLBACKUP_SESSION_SECRET:-}
       # Optional integrations. Blank disables the feature in the UI.
       MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
       MATRIX_TOKEN: ${MATRIX_TOKEN:-}
@@ -44,6 +50,11 @@ services:
       - ./data:/data
       # Mount each destination root you listed in PULLBACKUP_DEST_ROOTS.
       - /srv/backups:/mnt/dest/backups
+    # /api/system/health is exempt from authentication, so this probe does not
+    # actually need the Authorization header. It is kept because the exemption
+    # is a deliberate, narrow carve-out: if it were ever removed, a probe that
+    # already authenticates keeps the container healthy instead of restart-
+    # looping. Adding the login session changed nothing here.
     healthcheck:
       test:
         - CMD

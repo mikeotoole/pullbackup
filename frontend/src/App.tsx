@@ -1,11 +1,34 @@
-import { NavLink, Route, Routes, Navigate } from "react-router-dom";
+import { NavLink, Route, Routes, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { TasksList } from "./pages/TasksList";
 import { TaskForm } from "./pages/TaskForm";
 import { Sources } from "./pages/Sources";
 import { RunDetail } from "./pages/RunDetail";
 import { RunHistory } from "./pages/RunHistory";
+import { Login } from "./pages/Login";
+import { api, LOGIN_PATH } from "./lib/api";
 
 export default function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // The login page is its own full-height screen: showing the app nav around
+  // a sign-in form implies the operator is already in.
+  if (location.pathname.startsWith(LOGIN_PATH)) {
+    return (
+      <Routes>
+        <Route path="/login" element={<Login />} />
+      </Routes>
+    );
+  }
+
+  async function signOut() {
+    try {
+      await api.logout();
+    } finally {
+      navigate(LOGIN_PATH, { replace: true });
+    }
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-border bg-panel">
@@ -25,6 +48,14 @@ export default function App() {
             <NavLink to="/tasks" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>tasks</NavLink>
             <NavLink to="/sources" className={({isActive}) => isActive ? "text-accent" : "text-muted hover:text-white"}>sources</NavLink>
           </nav>
+          <button
+            type="button"
+            onClick={signOut}
+            title="sign out"
+            className="ml-auto text-sm text-muted hover:text-white min-h-[44px] px-2"
+          >
+            sign out
+          </button>
         </div>
       </header>
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
