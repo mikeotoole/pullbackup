@@ -2,6 +2,7 @@
 name = "pullbackup"
 version = "0.5.1"
 description = "Pull-only rsync task manager"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.115",

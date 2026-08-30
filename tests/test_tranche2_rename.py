@@ -16,8 +16,10 @@ trailing underscore is dropped. Every check below keeps the underscore, and
 """
 
 import importlib
+import json
 import os
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -562,14 +564,56 @@ def test_open_source_project_files_exist():
         assert (REPOSITORY_ROOT / name).is_file(), f"{name} is missing"
 
 
-@pytest.mark.xfail(
-    reason="LICENSE is pending Mike's choice (AGPL-3.0 under discussion). "
-    "This stays RED on purpose: publishing without a licence means nobody "
-    "can legally use or contribute, so it must not merge silently green.",
-    strict=False,
-)
 def test_repository_is_licensed():
-    assert (REPOSITORY_ROOT / "LICENSE").is_file()
+    """Mike chose AGPL-3.0 (2026-08-29).
+
+    Existence alone is too weak a guard: a truncated or wrong-licence file would
+    pass. This checks the artifact is really AGPL-3.0 and that every place the
+    project declares a licence agrees with it, because a repo whose LICENSE and
+    package metadata disagree is worse than one with neither.
+    """
+    licence = REPOSITORY_ROOT / "LICENSE"
+    assert licence.is_file(), "LICENSE is missing"
+
+    text = licence.read_text()
+    assert "GNU AFFERO GENERAL PUBLIC LICENSE" in text
+    assert "Version 3, 19 November 2007" in text
+    # The clause that distinguishes AGPL from GPL: network use counts.
+    assert "Remote Network Interaction" in text, (
+        "this does not look like the AGPL: the network-use clause is the whole "
+        "reason it was chosen over GPL-3.0 for server software"
+    )
+    # A truncated copy would still contain the header.
+    assert len(text) > 30_000, f"LICENSE looks truncated ({len(text)} chars)"
+
+    pyproject = tomllib.loads(PYPROJECT.read_text())
+    declared = pyproject["project"].get("license")
+    if isinstance(declared, dict):
+        declared = declared.get("text")
+    assert declared == "AGPL-3.0-or-later", (
+        f"backend/pyproject.toml declares license={declared!r}; it must match the "
+        "LICENSE file as an SPDX identifier"
+    )
+
+
+def test_the_readme_states_the_licence():
+    """A reader must be able to learn the licence without opening LICENSE."""
+    readme = (REPOSITORY_ROOT / "README.md").read_text()
+    assert "AGPL" in readme, "README does not mention the licence"
+
+
+def test_the_frontend_package_declares_the_same_licence():
+    """Review finding 2 on PR #17 (low): frontend/package.json had no `license`
+    field, so npm tooling reported it as UNLICENSED — a fifth declaration site
+    contradicting the other four. It is `private: true` and never published, so
+    this was never a legal exposure, but metadata that disagrees with LICENSE is
+    the exact confusion this suite exists to prevent.
+    """
+    package = json.loads((REPOSITORY_ROOT / "frontend" / "package.json").read_text())
+    assert package.get("license") == "AGPL-3.0-or-later", (
+        f"frontend/package.json declares license={package.get('license')!r}; "
+        "it must agree with LICENSE and backend/pyproject.toml"
+    )
 
 
 def test_security_policy_gives_a_private_reporting_route():
@@ -616,4 +660,43 @@ def test_dockerfile_installs_every_declared_dependency():
         "Dockerfile does not install declared dependencies: "
         + ", ".join(missing)
         + ". The image will fail at import."
+    )
+
+
+def test_the_dockerfile_ships_the_licence_into_the_image():
+    """Review finding 1 on PR #17 (medium, blocking).
+
+    The image and wheel declared `License-Expression: AGPL-3.0-or-later` while
+    carrying no copy of the licence text. AGPL-3.0 sections 4 and 6 require that
+    whoever conveys the work — including object code — give recipients a copy of
+    the licence along with the program, and `docker/compose.example.yaml` points
+    at a published image, so the container is an intended distribution channel.
+
+    The existing licence guard cannot catch this by construction: it reads the
+    repository tree, not the artifact. This one reads the Dockerfile, so the next
+    edit that drops the COPY fails here instead of shipping a compliance gap.
+    """
+    dockerfile = DOCKERFILE.read_text()
+
+    copies_licence = re.search(
+        r"^\s*COPY\s+(--from=\S+\s+)?LICENSE\b", dockerfile, re.MULTILINE
+    )
+    assert copies_licence, (
+        "the Dockerfile never copies LICENSE into the image, but the package "
+        "metadata declares AGPL-3.0-or-later. Distributing the binary without "
+        "the licence text is exactly what AGPL sections 4 and 6 forbid."
+    )
+
+
+def test_the_licence_copy_lands_in_the_application_directory():
+    """A COPY that lands somewhere unreachable is not a fix.
+
+    Asserted separately so the previous test cannot be satisfied by a stray
+    COPY into an unrelated stage or path.
+    """
+    dockerfile = DOCKERFILE.read_text()
+    runtime = dockerfile.split("AS runtime", 1)[-1]
+    assert re.search(r"^\s*COPY\s+LICENSE\b", runtime, re.MULTILINE), (
+        "LICENSE must be copied in the runtime stage; a copy confined to the "
+        "frontend build stage never reaches the shipped image"
     )

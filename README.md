@@ -97,3 +97,14 @@ The adoption shim is temporary: rename your variables and it goes quiet.
 `PULLBACKUP_ZFS_DEST_ROOTS` is a comma-separated allowlist for Syncoid destinations and ZFS pruning. Each Syncoid destination must be a descendant of one configured dataset root (for example, `cache/docker_remote/eel` beneath `cache/docker_remote`). An empty allowlist disables Syncoid and pruning operations. `PULLBACKUP_DEST_ROOTS` remains the separate filesystem allowlist for rsync destinations and the browser.
 
 Matrix and Uptime Kuma credentials are optional; omit their values to disable those integrations.
+
+## Licence
+
+Pullbackup is licensed under the **GNU Affero General Public License v3.0 or
+later** (AGPL-3.0-or-later). The full text is in [LICENSE](LICENSE).
+
+The AGPL was chosen deliberately over a permissive licence. Pullbackup is
+server software you self-host, and section 13 means that anyone who modifies it
+and offers it to others **over a network** must make their modified source
+available to those users. Running an unmodified copy for yourself — the normal
+case — carries no such obligation.

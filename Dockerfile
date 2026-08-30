@@ -30,6 +30,10 @@ WORKDIR /app
 # image raised ModuleNotFoundError at startup. Installing the project itself
 # makes that class of drift impossible.
 COPY backend/pyproject.toml ./pyproject.toml
+# AGPL-3.0 sections 4 and 6 require that whoever conveys the work — including
+# object code — give recipients a copy of the licence. The image declares
+# License-Expression: AGPL-3.0-or-later, so it must carry the text too.
+COPY LICENSE ./LICENSE
 COPY backend/pullbackup ./pullbackup
 RUN pip install --no-cache-dir .
 
