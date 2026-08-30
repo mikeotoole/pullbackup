@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Mike O'Toole
 import { NavLink, Route, Routes, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { TasksList } from "./pages/TasksList";
 import { TaskForm } from "./pages/TaskForm";

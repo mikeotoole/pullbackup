@@ -12,6 +12,10 @@ version yet.
 
 ### Added
 
+- **Copyright attribution.** `NOTICE` names the holder (Mike O'Toole) and every
+  first-party source file carries a one-line
+  `SPDX-License-Identifier: AGPL-3.0-or-later` header with a copyright line.
+  `LICENSE` stays byte-for-byte the FSF text; a test pins its sha256.
 - **Licensed under AGPL-3.0-or-later.** Pullbackup is server software you
   self-host; section 13 obliges anyone who modifies it and offers it to others
   over a network to publish their source. Running an unmodified copy carries no
@@ -40,6 +44,12 @@ version yet.
 
 ### Fixed
 
+- **The reported version is no longer wrong.** `backend/pyproject.toml` is the
+  single source of truth and `pullbackup.__version__` is derived from installed
+  distribution metadata, so `/api/system/health` and `/api/system/info` report
+  what was actually packaged. Three sources previously disagreed (0.10.0 in the
+  package, 0.5.1 in the packaging metadata, 0.11.0 deployed), which made a good
+  rollout look like a failed one. The authoritative version is now 0.11.0.
 - rsync destinations are pinned to a directory descriptor, closing a TOCTOU
   window between validating a destination and writing to it.
 - Destination validation no longer treats an unreadable path component as

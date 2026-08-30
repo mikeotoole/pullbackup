@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Mike O'Toole
 import logging
 from datetime import datetime
 from typing import Optional

@@ -577,7 +577,7 @@ wheels = [
 
 [[package]]
 name = "pullbackup"
-version = "0.5.1"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },

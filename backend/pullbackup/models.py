@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Mike O'Toole
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional

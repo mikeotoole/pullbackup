@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Mike O'Toole
 type RelativeDirection = "both" | "past";
 
 const HAS_TIMEZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i;

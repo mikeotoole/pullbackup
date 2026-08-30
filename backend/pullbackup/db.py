@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Mike O'Toole
 from sqlmodel import SQLModel, Session, create_engine
 from .config import settings
 

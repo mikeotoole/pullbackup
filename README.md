@@ -100,8 +100,16 @@ Matrix and Uptime Kuma credentials are optional; omit their values to disable th
 
 ## Licence
 
+Copyright (C) 2026 Mike O'Toole.
+
 Pullbackup is licensed under the **GNU Affero General Public License v3.0 or
-later** (AGPL-3.0-or-later). The full text is in [LICENSE](LICENSE).
+later** (AGPL-3.0-or-later). The full text is in [LICENSE](LICENSE), reproduced
+verbatim from the FSF; the copyright notice lives in [NOTICE](NOTICE) so the
+licence file stays unmodified.
+
+Source files carry a one-line SPDX identifier
+(`SPDX-License-Identifier: AGPL-3.0-or-later`) rather than a repeated notice
+block.
 
 The AGPL was chosen deliberately over a permissive licence. Pullbackup is
 server software you self-host, and section 13 means that anyone who modifies it
