@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import runs, sources, system, tasks
+from .api import auth, runs, sources, system, tasks
 from .db import init_db
 from .http_auth import HttpBasicAuthMiddleware, require_valid_configuration
 from .services import runner, scheduler, ssh
@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="pullback", lifespan=lifespan)
 app.add_middleware(HttpBasicAuthMiddleware)
 app.include_router(system.router)
+app.include_router(auth.router)
 app.include_router(sources.router)
 app.include_router(tasks.router)
 app.include_router(runs.router)

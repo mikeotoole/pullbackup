@@ -73,17 +73,58 @@ export type SystemInfo = {
   kuma_url: string;
 };
 
+export const LOGIN_PATH = "/login";
+
+/** Thrown when the API refuses the caller for lack of a session. */
+export class UnauthenticatedError extends Error {
+  constructor() {
+    super("not signed in");
+  }
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
     headers: { "Content-Type": "application/json" },
+    // The session cookie is useless unless it actually rides along. Without
+    // this the browser omits it for some fetch configurations and every call
+    // looks unauthenticated.
+    credentials: "same-origin",
     ...init,
   });
+  if (r.status === 401) {
+    // Send the operator to the login page rather than surfacing the raw 401
+    // body, but never bounce away from the login page itself — that would be
+    // a redirect loop on a wrong password.
+    if (!window.location.pathname.startsWith(LOGIN_PATH)) {
+      window.location.assign(LOGIN_PATH);
+    }
+    throw new UnauthenticatedError();
+  }
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   if (r.status === 204) return undefined as T;
   return r.json();
 }
 
+/** Login bypasses `http` so a wrong password reports itself instead of redirecting. */
+async function postLogin(username: string, password: string): Promise<void> {
+  const r = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ username, password }),
+  });
+  if (r.ok) return;
+  if (r.status === 401) throw new Error("invalid username or password");
+  if (r.status === 429) throw new Error("too many attempts — wait a minute and try again");
+  if (r.status === 503) throw new Error("this instance has no credentials configured");
+  throw new Error(`${r.status} ${await r.text()}`);
+}
+
 export const api = {
+  login: postLogin,
+  logout: () => http<{ authenticated: boolean }>("/api/auth/logout", { method: "POST" }),
+  session: () => http<{ authenticated: boolean }>("/api/auth/session"),
+
   systemInfo: () => http<SystemInfo>("/api/system/info"),
   sshPubkey: () => http<{ private_path: string; public_key: string }>("/api/system/ssh-pubkey"),
   browse: (path?: string) =>

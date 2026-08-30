@@ -35,7 +35,13 @@ whether something is a bug or expected behaviour.
 
 **In scope**
 
-- Bypassing HTTP Basic authentication on any endpoint.
+- Bypassing authentication on any endpoint, whether via HTTP Basic or the
+  login session cookie. This includes forging, tampering with, or replaying a
+  session cookie, and using a cookie after sign-out, after it expires, or
+  after the credential it was derived from changed.
+- The login endpoint accepting a credential the middleware would reject, or
+  answering anything other than 503 on an instance with no valid credential
+  configured.
 - Escaping the configured destination allowlist (`PULLBACKUP_DEST_ROOTS`,
   `PULLBACKUP_ZFS_DEST_ROOTS`) to read or write outside it — including via
   symlinks, races, or path traversal.
@@ -65,5 +71,12 @@ whether something is a bug or expected behaviour.
   read-only, and restricted to the paths you actually pull.
 - Keep the data volume (`/data`) off shared storage: it holds the database and
   the private key.
-- Put the UI behind a reverse proxy that terminates TLS. HTTP Basic sends
-  credentials on every request.
+- Put the UI behind a reverse proxy that terminates TLS. The session cookie is
+  only marked `Secure` when the request arrives over https, and HTTP Basic
+  sends the credential on every single request.
+- Sessions are single-user and held in process memory: there is no revocation
+  list that survives a restart, and a restart signs everyone out. Sign-out
+  revokes the session server-side, so a copied cookie stops working too.
+- Set `PULLBACKUP_SESSION_SECRET` if you need to change the password without
+  invalidating live sessions. Leaving it unset is the safer default: rotating
+  the credential then also rotates every session.

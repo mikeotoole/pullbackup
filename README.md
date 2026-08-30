@@ -17,7 +17,9 @@ Pull-only rsync task manager. Web UI like TrueNAS's "Rsync Tasks" but inverted: 
 
 ## Deployment
 
-Built as a single container image and deployed as a Docker Compose stack. Bind-mount the destination roots you want exposed; Pullbackup's filesystem browser is allowlisted to those roots. All UI and API routes except `/api/system/health` require HTTP Basic authentication.
+Built as a single container image and deployed as a Docker Compose stack. Bind-mount the destination roots you want exposed; Pullbackup's filesystem browser is allowlisted to those roots. All UI and API routes except `/api/system/health` require authentication: a
+signed session cookie obtained from the login page, or HTTP Basic credentials
+for scripted access.
 
 ```
 volumes:
@@ -55,6 +57,35 @@ npm run dev   # Vite proxies /api → :8000
 ## Env
 
 See `.env.example`. Deployment requires both `PULLBACKUP_HTTP_BASIC_USERNAME` and `PULLBACKUP_HTTP_BASIC_PASSWORD`; the password must contain at least 32 characters. Keep the password in the deployment secret store, not in source control.
+
+### Signing in
+
+Opening the UI presents a sign-in form at `/login`. Submitting the configured
+credential exchanges it for an `HttpOnly`, `SameSite=Lax` session cookie
+(`Secure` when the request arrives over https), so the credential is not
+re-sent on every request. Sessions last 7 days by default
+(`PULLBACKUP_SESSION_MAX_AGE_SECONDS`) and **sign out** in the header
+invalidates the session server-side, not just in the browser.
+
+HTTP Basic still works unchanged for scripted callers and for the container
+healthcheck — a request authenticates with either a valid session cookie or
+valid Basic credentials:
+
+```
+curl -u "$PULLBACKUP_HTTP_BASIC_USERNAME:$PULLBACKUP_HTTP_BASIC_PASSWORD" \
+  http://localhost:8000/api/tasks
+```
+
+Cookies are signed with `PULLBACKUP_SESSION_SECRET` when it is set. When it is
+not, the signing key is derived from the configured credential, so upgrading
+needs no new configuration — with the deliberate consequence that **changing
+the username or password invalidates every existing session**. Set an explicit
+secret if you would rather rotate the password without signing everyone out.
+Sessions are held in process memory, so restarting the container also signs
+everyone out.
+
+Repeated failed sign-ins from one address are locked out for 60 seconds after
+5 failures. HTTP Basic had no login endpoint to brute-force; a form does.
 
 This build reads the `PULLBACKUP_` prefix. If it finds a retired `PULLBACK_`
 name with no `PULLBACKUP_` counterpart it **adopts that value and logs a

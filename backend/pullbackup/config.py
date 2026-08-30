@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     log_retention_runs: int = 200
     http_basic_username: str = ""
     http_basic_password: str = ""
+    # Optional. When empty the signing key is derived from the password, so an
+    # upgrade needs no new configuration and changing the password invalidates
+    # every previously issued session.
+    session_secret: str = ""
+    session_max_age_seconds: int = 7 * 24 * 60 * 60
 
     matrix_homeserver: str = ""
     matrix_token: str = ""
