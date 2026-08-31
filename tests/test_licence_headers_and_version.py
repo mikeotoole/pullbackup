@@ -203,10 +203,15 @@ def _declared_version() -> str:
 
 
 def test_the_declared_version_is_the_deployed_one():
-    """0.11.0 is the tag of the image currently running in production. Source
-    was behind it, which is the drift this card exists to end.
+    """The version being released, and the tag of the image built from it.
+
+    Bumping this constant is the deliberate release step: it is the one place a
+    release is declared, and it fails loudly if someone builds an image tagged
+    differently from what the source will report at /api/system/health. That
+    disagreement is exactly the drift this guard exists to end -- three sources
+    once said 0.10.0, 0.5.1 and 0.11.0 at the same time.
     """
-    assert _declared_version() == "0.11.0"
+    assert _declared_version() == "0.12.0"
 
 
 def test_the_package_does_not_hardcode_a_version_literal():
