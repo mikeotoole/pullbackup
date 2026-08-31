@@ -100,6 +100,19 @@ class Settings(BaseSettings):
     # trusted and the login throttle keys on the immediate peer, exactly as it
     # did before the setting existed.
     trusted_proxies: str = ""
+    # Hard ceiling on each in-memory auth store (revoked sessions, failed-login
+    # history). Both are keyed on values an unauthenticated caller can
+    # influence, so a ceiling is what makes memory use predictable in a
+    # memory-limited container.
+    #
+    # 100,000 entries is roughly 10-20 MiB per store, which is negligible next
+    # to the container, while being far more concurrent sessions or distinct
+    # attacking clients than a single-operator backup tool will ever see. It is
+    # exposed rather than hard-coded because the safe value depends on the
+    # deployment: an instance behind a proxy serving a large user base wants it
+    # higher, and an operator who hits the cap should be able to raise it
+    # rather than read the source to discover the number exists.
+    auth_store_max_entries: int = 100_000
 
     matrix_homeserver: str = ""
     matrix_token: str = ""

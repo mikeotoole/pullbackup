@@ -5,10 +5,15 @@ import binascii
 import hmac
 import ipaddress
 import json
+import logging
 import secrets
+import threading
 import time
+from collections import OrderedDict
+from collections.abc import Callable, Iterator
 from hashlib import sha256
 from hmac import compare_digest
+from typing import Any
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -88,17 +93,363 @@ def _is_public_shell(path: str) -> bool:
 
 SESSION_COOKIE = "pullbackup_session"
 
-# Session identifiers revoked by an explicit logout. In-memory and
-# process-local ON PURPOSE: single-user, single-process app, and a restart
-# logging everyone out is the safe direction to fail.
-_revoked: set[str] = set()
-
-# Per-client failed-login history, for backoff. HTTP Basic had no login
-# endpoint to hammer; a form does, so the endpoint needs its own limit.
-_login_attempts: dict[str, list[float]] = {}
+logger = logging.getLogger(__name__)
 
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_SECONDS = 60
+
+# Tokens are rejected on AGE by `session_is_valid` before revocation matters,
+# and that check accepts `-60 <= age <= max_age`: up to max_age old, and up to
+# 60 seconds in the FUTURE, which tolerates a clock jump (the signature is
+# verified first, so a future `iat` is not a forgery). A sid is only revoked for
+# a token that is valid at that moment, so the worst case is a token dated 60
+# seconds ahead of the revoking clock, which stays acceptable through
+# `revoked_at + max_age + 60` INCLUSIVE.
+#
+# The store drops an entry once `expires_at <= now`, so the retention has to
+# strictly exceed that closed boundary — hence the extra second. Without it the
+# revocation is dropped at exactly the last instant the cookie would still have
+# been accepted, and logout stops meaning logout for one tick. Caught by
+# test_a_revoked_session_stays_revoked_for_as_long_as_it_could_be_valid.
+_REVOCATION_CLOCK_SLACK_SECONDS = 61
+
+
+class _ExpiringStore:
+    """A bounded, expiring, thread-safe mapping. One structure, both auth stores.
+
+    Written to close a CATEGORY rather than patch a fourth instance of it. See
+    the module docstring of ``tests/test_bounded_auth_stores.py`` for the four
+    review rounds that led here.
+
+    Three properties, each of which one of those rounds needed:
+
+    ``cap``
+        A hard maximum entry count, so the memory ceiling holds regardless of
+        traffic. An eviction sweep alone bounds the RATE of growth, not the
+        SIZE: a caller inserting distinct keys faster than the TTL expires them
+        still grows the store without limit.
+
+    per-entry expiry
+        So dead entries leave a quiet instance too, rather than 9,999 corpses
+        sitting in a 10,000-entry store until someone else needs the space.
+
+    amortised cleanup
+        The previous sweep tested EVERY live entry on EVERY login: 0.139 ms at
+        1k entries, 7.307 ms at 50k. That is a quadratic interaction — an
+        attacker who inflates the live set inflates the per-request cost for
+        everyone.
+
+    The amortisation comes from the ordering invariant, not from a heuristic:
+    **every entry in a given store gets the same TTL, measured from its last
+    touch, and a touch moves it to the back.** Insertion order is therefore
+    expiry order, so
+
+      * the sweep pops from the FRONT and stops at the first live entry — the
+        entries it examines are exactly the ones it removes, plus one. Each
+        entry is examined O(1) times across its whole lifetime.
+      * the cap evicts from the FRONT, so the entry discarded under pressure is
+        always the one with the LEAST remaining life. Evicting the newest, or
+        an arbitrary entry, would discard live state while dead state stayed
+        resident.
+
+    Do not add a per-entry TTL override. It would break both properties at
+    once, silently: an out-of-order expiry stops the sweep early and leaves
+    dead entries resident, and the cap starts evicting live entries ahead of
+    expired ones.
+
+    ``protect``
+        Front-eviction alone is WRONG for the login throttle, and the guard
+        ``test_a_client_mid_lockout_is_not_evicted_by_pressure_from_other_clients``
+        caught it: a locked-out client's entry is by construction the one
+        closest to expiring, so a cap that always evicts the front evicts
+        locked-out clients FIRST — silently disabling the throttle for exactly
+        the caller it exists to stop. Behind a trusted proxy that is reachable
+        at roughly 1,667 unauthenticated requests/sec.
+
+        So entries are held in two tiers sharing one cap. ``protect(value)``
+        decides the tier on every write; eviction drains the ordinary tier
+        completely before it will touch a protected one. Both tiers keep the
+        expiry ordering, so eviction inside either is still oldest-first and
+        still O(1).
+
+        Entry to the protected tier costs the attacker five real failed logins
+        rather than one request, and the only thing filling it evicts is an
+        older lockout — one closer to being released anyway.
+
+    Thread safety is by construction rather than by convention. ``login`` and
+    ``logout`` are SYNC FastAPI handlers, so Starlette runs them in the anyio
+    threadpool and several requests execute in real OS threads at once. The
+    previous code iterated the live dict from the request path and CPython
+    raised ``RuntimeError: dictionary changed size during iteration`` out of
+    the UNAUTHENTICATED login endpoint — 183 HTTP 500s across 24,000 requests
+    in the built image. Snapshotting fixed that instance; holding a lock inside
+    the structure means no future caller has to remember to.
+    """
+
+    __slots__ = (
+        "_entries",
+        "_protected",
+        "_lock",
+        "_ttl",
+        "_name",
+        "_protect",
+        "_warn_on_live_eviction",
+        "examined",
+    )
+
+    def __init__(
+        self,
+        ttl: Callable[[], float],
+        name: str,
+        protect: Callable[[Any], bool] | None = None,
+        warn_on_live_eviction: bool = False,
+    ) -> None:
+        # key -> (expires_at, value), each tier ordered oldest-expiry first.
+        self._entries: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._protected: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+        self._ttl = ttl
+        self._name = name
+        self._protect = protect
+        self._warn_on_live_eviction = warn_on_live_eviction
+        # Test hook: entries the expiry sweep has looked at. Counting work is a
+        # stable way to assert amortised complexity; a wall-clock assertion on a
+        # loaded laptop is a flake generator.
+        self.examined = 0
+
+    # -- internals, all called with the lock held ---------------------------
+
+    def _cap(self) -> int:
+        return max(1, int(settings.auth_store_max_entries))
+
+    def _sweep_tier(self, entries: OrderedDict[str, tuple[float, Any]], now: float) -> None:
+        while entries:
+            key, (expires_at, _) = next(iter(entries.items()))
+            self.examined += 1
+            if expires_at > now:
+                return
+            entries.pop(key, None)
+
+    def _sweep(self, now: float) -> None:
+        """Drop expired entries from the front of each tier. O(1) amortised."""
+        self._sweep_tier(self._entries, now)
+        self._sweep_tier(self._protected, now)
+
+    def _enforce_cap(self, now: float) -> None:
+        cap = self._cap()
+        while len(self._entries) + len(self._protected) > cap:
+            # Ordinary entries go first, in expiry order. Only when there are
+            # none left does a protected entry get sacrificed.
+            if self._entries:
+                _, (expires_at, _) = self._entries.popitem(last=False)
+            else:
+                _, (expires_at, _) = self._protected.popitem(last=False)
+
+            # Warn on any UNEXPIRED eviction, from EITHER tier.
+            #
+            # Review finding 1 on PR #20 (blocking): this warned only after
+            # popping from `_protected`, but `_revoked` is built with
+            # warn_on_live_eviction=True and NO protect callable, so `_place`
+            # always targets `_entries` and `_protected` is permanently empty.
+            # The branch could never execute. Measured at the pre-fix head with
+            # the cap squeezed to 100: 900 live revocations dropped, ZERO
+            # warnings logged. An alarm that provably cannot ring is worse than
+            # no alarm, because the next reader believes they are covered.
+            #
+            # Expired evictions stay silent on purpose: that is routine
+            # housekeeping, and warning on it would train an operator to ignore
+            # the one message that matters.
+            #
+            # Liveness is judged against the WALL CLOCK, not the caller's `now`.
+            # Callers pass their own `now` (tests, and any batched write), so
+            # comparing against it reported entries that expired long ago as
+            # live and fired the alarm 150 times during pure housekeeping. What
+            # matters is whether the entry is still usable at this instant.
+            if self._warn_on_live_eviction and expires_at > time.time():
+                # The one genuinely dangerous outcome in this change: a revoked
+                # sid dropped before its session would have expired makes that
+                # cookie valid again. Front-eviction plus authenticated-only
+                # insertion makes it unreachable in practice, so if it ever does
+                # happen the operator must hear about it rather than lose a
+                # revocation in silence.
+                logger.warning(
+                    "%s: evicted a live entry at the %d-entry cap; a revoked "
+                    "session may become usable again. Raise "
+                    "PULLBACKUP_AUTH_STORE_MAX_ENTRIES.",
+                    self._name,
+                    cap,
+                )
+
+    def _protected_cap(self) -> int:
+        """How much of the cap protected entries may hold.
+
+        Finding 3 on PR #20: the protected tier had no ceiling, so saturating it
+        left every NEW client's entry as the only unprotected thing in the
+        store — always the one evicted at insert. That client could never
+        accumulate failures, so it could never be locked out, and the mechanism
+        added to PRESERVE the throttle became a way to switch it off. Measured:
+        20 locked-out clients against a 20-entry cap, then a fresh client
+        survived 8 failed logins with retry_after 0 every time.
+
+        Half the cap. A COMPLETED lockout cannot be evicted by a flood of cheap
+        single-failure clients, because they compete for the other half, while a
+        newcomer is always admissible.
+
+        That guarantee covers completed lockouts ONLY, and the distinction
+        matters. A client with 1..4 failures is not yet protected, so it sits in
+        the ordinary half and can be evicted before it reaches the fifth. An
+        attacker sustaining roughly cap/2 distinct single-failure clients
+        BETWEEN each of a victim's attempts can therefore keep that victim from
+        ever locking out. Measured at cap 20: 9 interleaved flooders per attempt
+        and the victim still locks out; 10 or more and it never does.
+
+        Not closed here, deliberately. Protecting partial-failure entries would
+        reopen the unbounded-growth problem this store exists to solve, and the
+        attack costs roughly cap/2 real source addresses per victim attempt
+        sustained inside the 60s window (~50,000 at the default cap), all past
+        the trusted-proxy resolver. That is the same order of cost as the flood
+        the design already accepts.
+        """
+        return max(1, self._cap() // 2)
+
+    def _place(self, key: str, value: Any, now: float) -> None:
+        """Insert into whichever tier ``value`` belongs to, dropping the other."""
+        self._entries.pop(key, None)
+        self._protected.pop(key, None)
+        wants_protection = self._protect is not None and self._protect(value)
+        if wants_protection and len(self._protected) >= self._protected_cap():
+            # The protected share is full. Evict the OLDEST protected entry —
+            # the lockout closest to expiring anyway — rather than refusing the
+            # new one or spilling it into the unprotected tier, where a flood
+            # would evict it immediately.
+            self._protected.popitem(last=False)
+        target = self._protected if wants_protection else self._entries
+        target[key] = (now + self._ttl(), value)
+
+    def _find(self, key: str) -> tuple[float, Any] | None:
+        found = self._entries.get(key)
+        return self._protected.get(key) if found is None else found
+
+    # -- mapping surface ----------------------------------------------------
+
+    def set(self, key: str, value: Any, now: float | None = None) -> None:
+        """Insert or refresh ``key``, resetting its TTL and moving it to the back."""
+        now = time.time() if now is None else now
+        with self._lock:
+            self._sweep(now)
+            self._place(key, value, now)
+            self._enforce_cap(now)
+
+    def get(self, key: str, default: Any = None, now: float | None = None) -> Any:
+        now = time.time() if now is None else now
+        with self._lock:
+            self._sweep(now)
+            found = self._find(key)
+            if found is None or found[0] <= now:
+                return default
+            return found[1]
+
+    def pop(self, key: str, default: Any = None, now: float | None = None) -> Any:
+        now = time.time() if now is None else now
+        with self._lock:
+            self._sweep(now)
+            found = self._entries.pop(key, None)
+            if found is None:
+                found = self._protected.pop(key, None)
+            return default if found is None else found[1]
+
+    def mutate(self, key: str, change: Callable[[Any], Any], now: float | None = None) -> Any:
+        """Read-modify-write ``key`` atomically, refreshing its TTL.
+
+        ``change`` receives the current value (or ``None``) and returns the new
+        one. Exists because the failed-login counter is a read-modify-write and
+        doing it as ``get`` then ``set`` from the request path drops attempts
+        when two threadpool workers interleave — quietly weakening the throttle,
+        which is the failure direction that matters.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            self._sweep(now)
+            found = self._find(key)
+            updated = change(None if found is None else found[1])
+            self._place(key, updated, now)
+            self._enforce_cap(now)
+            return updated
+
+    def keys(self, now: float | None = None) -> list[str]:
+        """A SNAPSHOT of the live keys, never a live view.
+
+        Returning a view would hand a caller the exact iterate-while-mutating
+        hazard this class exists to remove.
+        """
+        now = time.time() if now is None else now
+        with self._lock:
+            self._sweep(now)
+            return list(self._entries) + list(self._protected)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._protected.clear()
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self.set(key, value)
+
+    def __getitem__(self, key: str) -> Any:
+        found = self.get(key, _MISSING)
+        if found is _MISSING:
+            raise KeyError(key)
+        return found
+
+    def __contains__(self, key: object) -> bool:
+        return isinstance(key, str) and self.get(key, _MISSING) is not _MISSING
+
+    def __len__(self) -> int:
+        return self.size()
+
+    def size(self, now: float | None = None) -> int:
+        now = time.time() if now is None else now
+        with self._lock:
+            self._sweep(now)
+            return len(self._entries) + len(self._protected)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.keys())
+
+
+_MISSING = object()
+
+
+# Session identifiers revoked by an explicit logout. In-memory and
+# process-local ON PURPOSE: single-user, single-process app, and a restart
+# logging everyone out is the safe direction to fail.
+#
+# Bounded and expiring since this card. Dropping an entry once the session
+# could no longer be valid anyway is provably behaviour-preserving:
+# `session_is_valid` rejects on AGE at line ~232 BEFORE consulting revocation,
+# so past that point the sid is dead weight either way.
+_revoked = _ExpiringStore(
+    ttl=lambda: settings.session_max_age_seconds + _REVOCATION_CLOCK_SLACK_SECONDS,
+    name="revoked-sessions",
+    warn_on_live_eviction=True,
+)
+
+# Per-client failed-login history, for backoff. HTTP Basic had no login
+# endpoint to hammer; a form does, so the endpoint needs its own limit.
+#
+# Entries older than LOGIN_LOCKOUT_SECONDS were ALREADY treated as irrelevant
+# by the throttle, so expiry here changes nothing an operator can observe.
+#
+# A client that is actually enforcing a lockout is PROTECTED from cap eviction.
+# Without that, the cap would evict locked-out clients first (their entries are
+# the oldest by construction) and a flood of cheap single-failure entries would
+# silently clear the throttle for the one caller it exists to stop.
+_login_attempts = _ExpiringStore(
+    ttl=lambda: float(LOGIN_LOCKOUT_SECONDS),
+    name="login-attempts",
+    protect=lambda attempts: len(attempts or []) >= LOGIN_MAX_FAILURES,
+)
+
 
 
 def _valid_configuration(username: str, password: str) -> bool:
@@ -222,17 +573,22 @@ def session_is_valid(token: str, now: float | None = None) -> bool:
     issued_at = claims.get("iat")
     if not isinstance(session_id, str) or not isinstance(issued_at, int):
         return False
-    if session_id in _revoked:
+
+    now = time.time() if now is None else now
+    # Checked against the SAME clock as the age test below. Reading the
+    # revocation store at the wall clock while judging age at a caller-supplied
+    # instant would let the two disagree about whether an entry is still live.
+    if _revoked.get(session_id, now=now):
         return False
 
-    age = (now if now is not None else time.time()) - issued_at
+    age = now - issued_at
     # A future-dated token is rejected as well: it can only come from a clock
     # jump or a forgery attempt, and accepting it would extend the lifetime
     # past the configured maximum.
     return -60 <= age <= settings.session_max_age_seconds
 
 
-def revoke_session(token: str) -> None:
+def revoke_session(token: str, now: float | None = None) -> None:
     """Blacklist a token's session id so the same cookie stops working.
 
     The signature is verified FIRST. Review finding 3 on PR #16: this parsed the
@@ -241,8 +597,15 @@ def revoke_session(token: str) -> None:
     insert arbitrary attacker-chosen sids into an unbounded in-memory set inside
     a memory-limited container. Verifying first costs nothing and removes the
     whole class; an unsigned or forged token is simply ignored.
+
+    Verifying first bounded WHO may insert. It did nothing about HOW MANY
+    entries accumulate, which is why the entry now expires: see
+    ``_REVOCATION_CLOCK_SLACK_SECONDS`` for why the retention interval is
+    exactly as long as the token could still be accepted, and not one second
+    less.
     """
-    if not session_is_valid(token):
+    now = time.time() if now is None else now
+    if not session_is_valid(token, now=now):
         return
     body, _, _ = token.partition(".")
     try:
@@ -251,7 +614,7 @@ def revoke_session(token: str) -> None:
         return  # unreachable: session_is_valid already parsed this
     sid = claims.get("sid")
     if isinstance(sid, str):
-        _revoked.add(sid)
+        _revoked.set(sid, True, now=now)
 
 
 def reset_auth_state() -> None:
@@ -264,56 +627,52 @@ def reset_auth_state() -> None:
     _login_attempts.clear()
 
 
-def _evict_expired_logins(now: float) -> None:
-    """Drop clients whose failed attempts have all aged out.
-
-    Review finding 2 on PR #19 (MEDIUM). Before the trusted-proxy work the key
-    space was the set of real peers, so a stale entry per peer was harmless.
-    With ``PULLBACKUP_TRUSTED_PROXIES`` configured the key is derived from
-    ``X-Forwarded-For``, which an unauthenticated caller influences: one distinct
-    value per request created one dict entry, and pruning left the empty key
-    behind. Measured at ~1 KiB per request — roughly 970 MiB per million — in a
-    memory-limited container.
-
-    Structurally the same defect as the unbounded revocation set the PR #16
-    review caught, so it is fixed the same way: bound the growth rather than
-    trust the caller to be well behaved.
-    Iterating a SNAPSHOT matters. ``login`` is a sync FastAPI handler, so
-    Starlette runs it in the anyio threadpool and several requests execute in
-    real OS threads at once. Iterating ``_login_attempts.items()`` directly let
-    another worker insert or remove a key mid-iteration, and CPython raised
-    ``RuntimeError: dictionary changed size during iteration`` out of the
-    UNAUTHENTICATED login endpoint — 183 HTTP 500s across 24,000 requests in the
-    built image, caught by the PR #19 second-pass review (card t_764c4f5c). The
-    pre-existing single-key write was atomic; whole-dict iteration is not.
-    ``pop`` rather than ``del`` because a concurrent worker may have removed the
-    key between the snapshot and this line.
-    """
-    for client, attempts in list(_login_attempts.items()):
-        if not any(now - t < LOGIN_LOCKOUT_SECONDS for t in attempts):
-            _login_attempts.pop(client, None)
-
-
 def login_throttle_retry_after(client: str, now: float | None = None) -> int:
-    """Seconds the client must wait, or 0 when it may attempt a login."""
+    """Seconds the client must wait, or 0 when it may attempt a login.
+
+    No eviction sweep here any more. It used to call ``_evict_expired_logins``,
+    which snapshotted the WHOLE dict and tested every entry on every login:
+    0.139 ms at 1k live entries, 7.307 ms at 50k, so end-to-end login latency
+    ran from 0.43 ms/req at rest to 8.7 ms/req at 60k. Because the key space is
+    attacker-influenced behind a trusted proxy, that made an attacker able to
+    inflate everyone else's per-request cost. Expiry is now the store's job and
+    costs O(1) amortised.
+
+    This is a READ, so it must not extend the lockout: ``get`` deliberately does
+    not refresh the TTL. Only ``record_failed_login`` does.
+    """
     now = time.time() if now is None else now
-    _evict_expired_logins(now)
-    recent = [t for t in _login_attempts.get(client, []) if now - t < LOGIN_LOCKOUT_SECONDS]
-    if recent:
-        _login_attempts[client] = recent
-    else:
-        _login_attempts.pop(client, None)
+    attempts = _login_attempts.get(client, now=now) or []
+    recent = [t for t in attempts if now - t < LOGIN_LOCKOUT_SECONDS]
     if len(recent) < LOGIN_MAX_FAILURES:
         return 0
     return max(1, int(LOGIN_LOCKOUT_SECONDS - (now - recent[-LOGIN_MAX_FAILURES]) + 1))
 
 
 def record_failed_login(client: str, now: float | None = None) -> None:
-    _login_attempts.setdefault(client, []).append(time.time() if now is None else now)
+    """Charge one failure to ``client`` and (re)start its 60-second window.
+
+    ``mutate`` rather than get-then-set: two threadpool workers racing on the
+    same client must not lose an attempt, because losing attempts weakens the
+    throttle.
+
+    The list is trimmed to the attempts that still matter. Without it a client
+    that keeps failing accumulates timestamps without limit inside ONE entry —
+    the cap counts entries, so an unbounded value would reintroduce the same
+    unbounded-growth defect one level down.
+    """
+    now = time.time() if now is None else now
+
+    def append(existing: list[float] | None) -> list[float]:
+        attempts = [t for t in (existing or []) if now - t < LOGIN_LOCKOUT_SECONDS]
+        attempts.append(now)
+        return attempts[-LOGIN_MAX_FAILURES:]
+
+    _login_attempts.mutate(client, append, now=now)
 
 
 def clear_failed_logins(client: str) -> None:
-    _login_attempts.pop(client, None)
+    _login_attempts.pop(client)
 
 
 # --------------------------------------------------------------------------
