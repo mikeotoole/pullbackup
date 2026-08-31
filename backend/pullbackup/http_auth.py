@@ -3,6 +3,7 @@
 import base64
 import binascii
 import hmac
+import ipaddress
 import json
 import secrets
 import time
@@ -12,6 +13,7 @@ from hmac import compare_digest
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from .config import parse_trusted_proxies as _parse_trusted_proxies
 from .config import settings
 
 _HEALTH_PATH = "/api/system/health"
@@ -262,11 +264,45 @@ def reset_auth_state() -> None:
     _login_attempts.clear()
 
 
+def _evict_expired_logins(now: float) -> None:
+    """Drop clients whose failed attempts have all aged out.
+
+    Review finding 2 on PR #19 (MEDIUM). Before the trusted-proxy work the key
+    space was the set of real peers, so a stale entry per peer was harmless.
+    With ``PULLBACKUP_TRUSTED_PROXIES`` configured the key is derived from
+    ``X-Forwarded-For``, which an unauthenticated caller influences: one distinct
+    value per request created one dict entry, and pruning left the empty key
+    behind. Measured at ~1 KiB per request — roughly 970 MiB per million — in a
+    memory-limited container.
+
+    Structurally the same defect as the unbounded revocation set the PR #16
+    review caught, so it is fixed the same way: bound the growth rather than
+    trust the caller to be well behaved.
+    Iterating a SNAPSHOT matters. ``login`` is a sync FastAPI handler, so
+    Starlette runs it in the anyio threadpool and several requests execute in
+    real OS threads at once. Iterating ``_login_attempts.items()`` directly let
+    another worker insert or remove a key mid-iteration, and CPython raised
+    ``RuntimeError: dictionary changed size during iteration`` out of the
+    UNAUTHENTICATED login endpoint — 183 HTTP 500s across 24,000 requests in the
+    built image, caught by the PR #19 second-pass review (card t_764c4f5c). The
+    pre-existing single-key write was atomic; whole-dict iteration is not.
+    ``pop`` rather than ``del`` because a concurrent worker may have removed the
+    key between the snapshot and this line.
+    """
+    for client, attempts in list(_login_attempts.items()):
+        if not any(now - t < LOGIN_LOCKOUT_SECONDS for t in attempts):
+            _login_attempts.pop(client, None)
+
+
 def login_throttle_retry_after(client: str, now: float | None = None) -> int:
     """Seconds the client must wait, or 0 when it may attempt a login."""
     now = time.time() if now is None else now
+    _evict_expired_logins(now)
     recent = [t for t in _login_attempts.get(client, []) if now - t < LOGIN_LOCKOUT_SECONDS]
-    _login_attempts[client] = recent
+    if recent:
+        _login_attempts[client] = recent
+    else:
+        _login_attempts.pop(client, None)
     if len(recent) < LOGIN_MAX_FAILURES:
         return 0
     return max(1, int(LOGIN_LOCKOUT_SECONDS - (now - recent[-LOGIN_MAX_FAILURES]) + 1))
@@ -278,6 +314,78 @@ def record_failed_login(client: str, now: float | None = None) -> None:
 
 def clear_failed_logins(client: str) -> None:
     _login_attempts.pop(client, None)
+
+
+# --------------------------------------------------------------------------
+# who the throttle is keyed on
+# --------------------------------------------------------------------------
+
+FORWARDED_FOR_HEADER = "x-forwarded-for"
+
+# One parser, shared with the startup validator in config, so the set of
+# entries the loader accepts and the set the resolver trusts can never drift.
+parse_trusted_proxies = _parse_trusted_proxies
+
+
+def _is_trusted(address: str, networks) -> bool:
+    if not networks:
+        return False
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(parsed in network for network in networks)
+
+
+def resolve_client_identity(
+    peer: str | None,
+    forwarded_for: str,
+    trusted_proxies: str | None = None,
+) -> str:
+    """The identity the failed-login throttle is keyed on.
+
+    Behind a reverse proxy ``peer`` is the proxy for every caller, so keying on
+    it alone puts every client in one failure bucket and lets five wrong
+    guesses lock the login form for everybody. ``X-Forwarded-For`` names the
+    real client — but it is a request header, so it is only worth anything when
+    the hop that set it is one we configured.
+
+    Hence:
+
+      * peer not in the allowlist (the default, which is empty) -> the header is
+        ignored entirely and the answer is ``peer``, exactly as before;
+      * peer in the allowlist -> walk the header RIGHT to LEFT, past hops that
+        are themselves allowlisted proxies, and take the first one that is not.
+
+    Right-to-left matters. A proxy APPENDS the address it saw, so the rightmost
+    entries are the ones our own infrastructure wrote and the leftmost is
+    whatever the client sent. Taking the leftmost would let an attacker mint a
+    fresh identity per request and defeat the throttle completely — strictly
+    worse than the shared bucket. An unparseable hop stops the walk rather than
+    being skipped, so a junk entry cannot be used to reach past it.
+
+    When the walk finds no untrusted hop — every entry claims to be one of our
+    proxies, or the header is absent — the answer falls back to ``peer``.
+    """
+    if not peer:
+        return "unknown"
+
+    raw = settings.trusted_proxies if trusted_proxies is None else trusted_proxies
+    networks = parse_trusted_proxies(raw or "")
+    if not _is_trusted(peer, networks):
+        return peer
+
+    for hop in reversed([h.strip() for h in forwarded_for.split(",") if h.strip()]):
+        try:
+            ipaddress.ip_address(hop)
+        except ValueError:
+            # Not an address at all. Stop here rather than continuing left;
+            # continuing would let a junk entry act as a fence an attacker can
+            # hide behind.
+            return peer
+        if not _is_trusted(hop, networks):
+            return hop
+    return peer
 
 
 class HttpBasicAuthMiddleware:

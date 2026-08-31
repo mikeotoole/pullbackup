@@ -37,6 +37,13 @@ services:
       # Optional. Signs session cookies. Unset means the key is derived from
       # the password above, so changing the password signs everyone out.
       PULLBACKUP_SESSION_SECRET: ${PULLBACKUP_SESSION_SECRET:-}
+      # Optional. Reverse proxies whose X-Forwarded-For may be believed,
+      # comma-separated IPs or CIDRs. Set this whenever the container sits
+      # behind the Traefik block at the bottom of this file: without it the
+      # failed-login throttle sees the proxy's address for every caller and all
+      # clients share one failure bucket, so five wrong guesses by anybody lock
+      # the login form for everybody. Empty = no forwarding header is trusted.
+      PULLBACKUP_TRUSTED_PROXIES: ${PULLBACKUP_TRUSTED_PROXIES:-}
       # Optional integrations. Blank disables the feature in the UI.
       MATRIX_HOMESERVER: ${MATRIX_HOMESERVER:-}
       MATRIX_TOKEN: ${MATRIX_TOKEN:-}
@@ -91,3 +98,11 @@ services:
 #     - traefik.http.routers.pullbackup.rule=Host(`pullbackup.example.com`)
 #     - traefik.http.routers.pullbackup.tls=true
 #     - traefik.http.services.pullbackup.loadbalancer.server.port=8000
+#
+# If you enable this, ALSO set PULLBACKUP_TRUSTED_PROXIES above to the network
+# Traefik reaches the container from (e.g. the docker network's subnet,
+# 172.18.0.0/16). Otherwise the app sees Traefik's address as the client for
+# every request and the failed-login throttle becomes shared: five wrong
+# guesses by anyone lock the login form for everyone for 60 seconds. HTTP Basic
+# keeps working throughout, so scripted access is never lost.
+

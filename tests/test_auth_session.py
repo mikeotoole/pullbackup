@@ -39,6 +39,10 @@ def configured(monkeypatch):
     monkeypatch.setitem(settings.__dict__, "http_basic_username", USERNAME)
     monkeypatch.setitem(settings.__dict__, "http_basic_password", PASSWORD)
     monkeypatch.setitem(settings.__dict__, "session_secret", "")
+    # No trusted proxy: forwarding headers are inert, so every test in this
+    # module keys the throttle on the immediate peer, as it did before the
+    # allowlist existed.
+    monkeypatch.setitem(settings.__dict__, "trusted_proxies", "")
     http_auth.reset_auth_state()
     yield
     http_auth.reset_auth_state()
@@ -305,6 +309,14 @@ async def test_unconfigured_credentials_fail_closed_everywhere(
 
 @pytest.mark.asyncio
 async def test_repeated_failed_logins_are_throttled(configured):
+    """The throttle itself, keyed on the caller's identity.
+
+    Every request here shares one identity (same peer, no trusted proxy
+    configured), so this asserts that ONE client is locked out after five
+    failures — not that everyone is. The multi-client consequence of keying on
+    the immediate peer behind a reverse proxy, and the trusted-proxy allowlist
+    that fixes it, live in tests/test_trusted_proxies.py.
+    """
     wrong = {"username": USERNAME, "password": "wrong-password-padding-value"}
 
     async with client() as c:

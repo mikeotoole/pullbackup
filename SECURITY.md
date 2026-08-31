@@ -74,6 +74,25 @@ whether something is a bug or expected behaviour.
 - Put the UI behind a reverse proxy that terminates TLS. The session cookie is
   only marked `Secure` when the request arrives over https, and HTTP Basic
   sends the credential on every single request.
+- **If you do put it behind a proxy, set `PULLBACKUP_TRUSTED_PROXIES`.** The
+  failed-login throttle keys on the address the app sees, which behind a proxy
+  is the proxy's address for every caller. Left unset, all clients therefore
+  share one failure bucket: five wrong guesses by anybody locks the login form
+  for everybody for 60 seconds, renewable indefinitely — a self-inflicted
+  denial of service. HTTP Basic is unaffected, so a scripted operator always
+  retains a way in, which is what keeps this an availability problem rather
+  than an access one.
+
+  List the proxy addresses or CIDR ranges you control
+  (`PULLBACKUP_TRUSTED_PROXIES=172.18.0.0/16`) and each real client gets its
+  own bucket. `X-Forwarded-For` is honoured only on requests arriving from a
+  listed address, and even then it is walked right-to-left past listed hops, so
+  a client cannot pick its own identity by prepending entries. From an unlisted
+  address the header is ignored outright — it can never be used to evade the
+  throttle. The trade-off is real, so list only proxies you control: any host
+  in that list can claim to be forwarding for any client. A malformed value is
+  refused at startup rather than silently disabling the setting.
+
 - Sessions are single-user and held in process memory: there is no revocation
   list that survives a restart, and a restart signs everyone out. Sign-out
   revokes the session server-side, so a copied cookie stops working too.
