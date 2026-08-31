@@ -23,8 +23,42 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def _forwarded_for_value(headers) -> str:
+    """Every ``X-Forwarded-For`` line, comma-joined.
+
+    Review finding 1 on PR #19 (HIGH). This used ``headers.get(...)``, which
+    returns only the FIRST matching header line. A proxy is free to emit its own
+    separate line rather than appending to the client's — HAProxy's
+    ``option forwardfor`` does exactly that, while nginx's
+    ``$proxy_add_x_forwarded_for`` appends in place. Reading only the first line
+    therefore walked the CLIENT's list and never saw the proxy's entry, leaving
+    the rightmost hop fully attacker-controlled. A client could mint a fresh
+    identity per request and the throttle stopped existing: eight consecutive
+    failed logins behind a real HAProxy were never throttled.
+
+    RFC 7230 section 3.2.2 makes repeated headers equivalent to one comma-joined
+    value, so joining is both correct and what the right-to-left walk assumes.
+    """
+    return ",".join(headers.getlist(http_auth.FORWARDED_FOR_HEADER))
+
+
 def _client_key(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    """The identity the failed-login throttle is keyed on.
+
+    Not simply ``request.client.host``: behind the reverse proxy that
+    SECURITY.md and docker/compose.example.yaml both recommend, that value is
+    the proxy for every caller, so all clients would share one failure bucket
+    and five wrong guesses by anybody would lock the login form for everybody.
+
+    ``X-Forwarded-For`` is consulted only when the immediate peer is listed in
+    ``PULLBACKUP_TRUSTED_PROXIES``, which is empty by default. See
+    ``http_auth.resolve_client_identity`` for why the walk goes right to left.
+    """
+    peer = request.client.host if request.client else None
+    return http_auth.resolve_client_identity(
+        peer,
+        _forwarded_for_value(request.headers),
+    )
 
 
 def _unconfigured() -> JSONResponse | None:

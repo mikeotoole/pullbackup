@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Mike O'Toole
+import ipaddress
 import logging
 import os
 from pathlib import Path
@@ -94,6 +95,11 @@ class Settings(BaseSettings):
     # every previously issued session.
     session_secret: str = ""
     session_max_age_seconds: int = 7 * 24 * 60 * 60
+    # Comma-separated IPs or CIDRs of reverse proxies whose X-Forwarded-For
+    # header may be believed. Empty (the default) means no forwarding header is
+    # trusted and the login throttle keys on the immediate peer, exactly as it
+    # did before the setting existed.
+    trusted_proxies: str = ""
 
     matrix_homeserver: str = ""
     matrix_token: str = ""
@@ -107,6 +113,10 @@ class Settings(BaseSettings):
     @property
     def dest_roots_list(self) -> list[Path]:
         return [Path(p.strip()) for p in self.dest_roots.split(",") if p.strip()]
+
+    @property
+    def trusted_proxy_networks(self) -> list:
+        return parse_trusted_proxies(self.trusted_proxies)
 
     @property
     def zfs_dest_roots_list(self) -> list[str]:
@@ -176,6 +186,60 @@ def _validate_db_filename(name: str) -> None:
         )
 
 
+def parse_trusted_proxies(raw: str) -> list:
+    """Parse the trusted-proxy allowlist, returning [] for anything malformed.
+
+    Fails CLOSED. An empty list means no forwarding header is believed and the
+    login throttle keys on the immediate peer — the behaviour that shipped
+    before this setting existed. The opposite failure mode, reading a typo as
+    "trust everyone", would convert a misconfiguration into a throttle bypass,
+    so a single bad entry discards the whole list rather than the entry.
+
+    A bare address is accepted and treated as a single-host network, because
+    that is what an operator writes for a single proxy.
+    """
+    networks = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            return []
+    return networks
+
+
+def invalid_trusted_proxies(raw: str) -> list[str]:
+    """Entries of the allowlist that are not an IP address or CIDR."""
+    invalid = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            invalid.append(entry)
+    return invalid
+
+
+def _validate_trusted_proxies(raw: str) -> None:
+    """Refuse to start on a malformed allowlist.
+
+    The runtime resolver already fails closed, so a typo cannot widen the trust
+    boundary. But silently ignoring a setting the operator believes is switched
+    on is its own trap: the throttle would quietly stay shared across every
+    client behind the proxy. Naming the bad entry at startup makes that loud.
+    """
+    invalid = invalid_trusted_proxies(raw)
+    if invalid:
+        raise ConfigurationError(
+            f"{ENV_PREFIX}TRUSTED_PROXIES must be a comma-separated list of IP "
+            f"addresses or CIDR ranges; could not parse: {', '.join(invalid)}"
+        )
+
+
 ENV_FILE = ".env"
 
 
@@ -227,6 +291,7 @@ def load_settings(environ=None, env_file=ENV_FILE) -> Settings:
     # through to both models so validation and loading read the same source.
     settings = Settings(_env_file=env_file, **_explicit(merged))
     _validate_db_filename(settings.db_filename)
+    _validate_trusted_proxies(settings.trusted_proxies)
 
     mk = _MatrixKumaSettings(_env_file=env_file, **_matrix_kuma(environ))
     settings.matrix_homeserver = settings.matrix_homeserver or mk.MATRIX_HOMESERVER

@@ -87,6 +87,31 @@ everyone out.
 Repeated failed sign-ins from one address are locked out for 60 seconds after
 5 failures. HTTP Basic had no login endpoint to brute-force; a form does.
 
+### Behind a reverse proxy
+
+The throttle keys on the address the app actually sees. Behind a reverse proxy
+that is the *proxy's* address for every caller, so by default all clients share
+one failure bucket — five wrong guesses by anybody locks the login form for
+everybody for 60 seconds. HTTP Basic is unaffected, so a scripted caller always
+has a way in, but the form is unusable for the duration.
+
+Set `PULLBACKUP_TRUSTED_PROXIES` to a comma-separated list of the proxy
+addresses or CIDR ranges you control:
+
+```
+PULLBACKUP_TRUSTED_PROXIES=172.18.0.0/16
+```
+
+Only then is `X-Forwarded-For` consulted, and only for requests arriving from
+one of those addresses; each real client then gets its own bucket. A request
+from anywhere else has its forwarding headers ignored entirely, so the header
+can never be used to escape the limit. Leaving the setting empty keeps the
+pre-existing behaviour exactly.
+
+Only list proxies you actually control — any host in this list can claim to be
+forwarding for any client. A value that is not a valid address or CIDR is
+refused at startup rather than silently ignored.
+
 This build reads the `PULLBACKUP_` prefix. If it finds a retired `PULLBACK_`
 name with no `PULLBACKUP_` counterpart it **adopts that value and logs a
 warning**, rather than falling back to a built-in default — which would widen
