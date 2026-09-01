@@ -71,6 +71,13 @@ jobs:
           set -eu
           export PATH="/opt/node/bin:$PATH"
           RUN_ROOT="/tmp/pullback-tests-${TARGET}"
+          # The suite opens a real SQLite database under PULLBACKUP_DATA_DIR and
+          # does not create the directory itself. Without this, five tests in
+          # tests/test_bounded_auth_stores.py fail at fixture setup with
+          # "sqlite3.OperationalError: unable to open database file" and the job
+          # exits 1 - which is why CI was red on main while the same commit
+          # passed locally.
+          mkdir -p "$PULLBACKUP_DATA_DIR"
           cd "$RUN_ROOT/work"
           timeout 600 uv run --project backend --locked --with pytest --with pytest-asyncio pytest -p no:cacheprovider -q
           timeout 300 npm ci --no-audit --no-fund --prefix frontend
