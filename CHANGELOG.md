@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-31
+
 ### Security
 
 - Refuse to start when `PULLBACKUP_AUTH_STORE_MAX_ENTRIES` is below 100. The
