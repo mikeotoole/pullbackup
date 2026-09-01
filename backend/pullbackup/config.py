@@ -12,6 +12,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ENV_PREFIX = "PULLBACKUP_"
 LEGACY_ENV_PREFIX = "PULLBACK_"
 
+# Smallest auth-store cap the loader will accept.
+#
+# ADVISORY 3 on PR #20: below roughly two entries the throttle stops being a
+# throttle. `_ExpiringStore._protected_cap()` reserves `max(1, cap // 2)` for
+# completed lockouts, so at cap=1 one locked-out client occupies the entire
+# store and every newcomer's entry is evicted at insert — measured as eight
+# consecutive failed logins with retry_after 0 each time. Zero and negatives
+# reach the same place through the store's own `max(1, ...)` floors, which are
+# load-bearing (removing them raises KeyError from `_place`).
+#
+# 100 rather than 2. The store's documented weakness is that an attacker
+# sustaining ~cap/2 distinct single-failure clients between a victim's attempts
+# can keep that victim from ever locking out; measured, the victim survives at
+# exactly `cap` interleaved flooders per attempt. A floor of 2 would be
+# technically functional and practically defeated by a handful of addresses.
+# 100 costs a few KiB, is 1/1000th of the default, and makes the cheapest
+# throttle bypass cost 100 distinct source addresses sustained inside the
+# 60-second window, past the trusted-proxy resolver.
+MIN_AUTH_STORE_MAX_ENTRIES = 100
+
 
 class ConfigurationError(RuntimeError):
     """Raised when the environment cannot be trusted to configure the app.
@@ -112,6 +132,10 @@ class Settings(BaseSettings):
     # deployment: an instance behind a proxy serving a large user base wants it
     # higher, and an operator who hits the cap should be able to raise it
     # rather than read the source to discover the number exists.
+    #
+    # Refused below MIN_AUTH_STORE_MAX_ENTRIES at startup: a store too small to
+    # hold a lockout alongside a newcomer switches the throttle off rather than
+    # merely constraining it. See _validate_auth_store_max_entries.
     auth_store_max_entries: int = 100_000
 
     matrix_homeserver: str = ""
@@ -253,6 +277,29 @@ def _validate_trusted_proxies(raw: str) -> None:
         )
 
 
+def _validate_auth_store_max_entries(cap: int) -> None:
+    """Refuse a cap too small for the throttle to work.
+
+    Rejected rather than clamped, matching this file's existing stance
+    (`_validate_db_filename`, `_validate_trusted_proxies`) and
+    `http_auth.require_valid_configuration`, which refuses a short HTTP Basic
+    password rather than padding it. Clamping would run under a number the
+    operator never chose while their configured value silently had no effect —
+    the same silence this guard exists to remove, relocated.
+
+    The error names both the variable and the minimum, so the fix does not
+    require reading this source.
+    """
+    if cap < MIN_AUTH_STORE_MAX_ENTRIES:
+        raise ConfigurationError(
+            f"{ENV_PREFIX}AUTH_STORE_MAX_ENTRIES must be at least "
+            f"{MIN_AUTH_STORE_MAX_ENTRIES} (got {cap}). Below that the store "
+            f"cannot hold a locked-out client and a new one at the same time, "
+            f"so the login throttle is switched off rather than merely "
+            f"constrained. The default is 100000."
+        )
+
+
 ENV_FILE = ".env"
 
 
@@ -305,6 +352,7 @@ def load_settings(environ=None, env_file=ENV_FILE) -> Settings:
     settings = Settings(_env_file=env_file, **_explicit(merged))
     _validate_db_filename(settings.db_filename)
     _validate_trusted_proxies(settings.trusted_proxies)
+    _validate_auth_store_max_entries(settings.auth_store_max_entries)
 
     mk = _MatrixKumaSettings(_env_file=env_file, **_matrix_kuma(environ))
     settings.matrix_homeserver = settings.matrix_homeserver or mk.MATRIX_HOMESERVER

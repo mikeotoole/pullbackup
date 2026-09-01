@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Refuse to start when `PULLBACKUP_AUTH_STORE_MAX_ENTRIES` is below 100. The
+  loader previously accepted any integer, including 0 and negatives. Because
+  the store reserves `max(1, cap // 2)` for completed lockouts, a cap of 1 left
+  one locked-out client occupying the whole store and every newcomer evicted at
+  insert: a fresh client survived eight consecutive failed logins with
+  `retry_after` 0 each time. The throttle was absent rather than broken, and
+  nothing warned.
+
 ## [0.12.0] - 2026-08-31
 
 ### Security

@@ -931,3 +931,183 @@ def test_shrinking_the_cap_drops_the_oldest_lockouts_first(store_cap):
         "OLDEST lockouts (closest to release) and keep the freshest. Keeping low "
         "client numbers means the newest lockouts were sacrificed instead."
     )
+
+
+# --------------------------------------------------------------------------
+# a cap too small to throttle is refused at startup
+# --------------------------------------------------------------------------
+#
+# ADVISORY 3 from PR #20 review pass 2. PULLBACKUP_AUTH_STORE_MAX_ENTRIES=1
+# silently switches the login throttle off for every client after the first
+# lockout: `_protected_cap()` is `max(1, cap // 2)`, so at cap=1 the protected
+# share IS the whole store, one locked-out client occupies it, and a newcomer's
+# entry is evicted at every insert. Measured at the pre-fix head:
+#
+#   cap=1  protected_cap=1  victim_retry_after=61  fresh x8 -> [0]*8
+#   cap=2  protected_cap=1  victim_retry_after=61  fresh x8 -> [0,0,0,0,61,...]
+#
+# The `max(1, ...)` floors inside the store are correct and load-bearing —
+# removing them raises `KeyError: 'dictionary is empty'` from `_place`. The
+# defect is that the LOADER accepts the value. It also accepted 0 and -5, which
+# reach the same total disablement through the same floors.
+#
+# Fixed the way this codebase already handles misconfiguration: refuse to start.
+# `_validate_db_filename` and `_validate_trusted_proxies` raise
+# ConfigurationError, and `require_valid_configuration` refuses a short HTTP
+# Basic password rather than accepting a weak one. A throttle store too small to
+# hold a lockout AND a newcomer is the same class of mistake, and the failure it
+# produces is the worst shape for a security control: absent rather than broken,
+# with the app still serving and the login form still working.
+
+
+def test_the_loader_refuses_a_cap_too_small_to_throttle():
+    """cap=1 is a silently disabled throttle, so startup must abort.
+
+    Not clamped. Clamping would honour a number the operator never chose and
+    leave them believing the configured value took effect — the same silence in
+    a different place. The name and the floor both appear in the message so the
+    fix does not require reading the source.
+    """
+    from pullbackup.config import ConfigurationError, load_settings
+
+    with pytest.raises(ConfigurationError) as raised:
+        load_settings(
+            {
+                "PULLBACKUP_HTTP_BASIC_USERNAME": USERNAME,
+                "PULLBACKUP_HTTP_BASIC_PASSWORD": PASSWORD,
+                "PULLBACKUP_AUTH_STORE_MAX_ENTRIES": "1",
+            },
+            env_file=None,
+        )
+
+    message = str(raised.value)
+    assert "PULLBACKUP_AUTH_STORE_MAX_ENTRIES" in message, (
+        f"the error does not name the variable to fix: {message!r}"
+    )
+    # `"100" in message` would be satisfied by the trailing "The default is
+    # 100000.", so it passes on a message naming the WRONG floor or none at all.
+    # That is the same substring trap documented in
+    # test_the_env_example_documents_the_minimum below, which is why this pins
+    # the number with a non-digit boundary instead.
+    import re
+
+    from pullbackup.config import MIN_AUTH_STORE_MAX_ENTRIES
+
+    assert re.search(rf"at least {MIN_AUTH_STORE_MAX_ENTRIES}(?!\d)", message), (
+        f"the error does not name the minimum the operator must meet: {message!r}"
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-5"])
+def test_the_loader_refuses_a_nonpositive_cap(value):
+    """Zero and negatives were accepted verbatim and reached the same failure.
+
+    Measured at the pre-fix head: the loader returned 0 and -5 unchanged, and
+    `_cap()`'s `max(1, ...)` turned both into a one-entry store — cap=1's
+    disabled throttle, arrived at without ever writing 1.
+    """
+    from pullbackup.config import ConfigurationError, load_settings
+
+    with pytest.raises(ConfigurationError):
+        load_settings(
+            {
+                "PULLBACKUP_HTTP_BASIC_USERNAME": USERNAME,
+                "PULLBACKUP_HTTP_BASIC_PASSWORD": PASSWORD,
+                "PULLBACKUP_AUTH_STORE_MAX_ENTRIES": value,
+            },
+            env_file=None,
+        )
+
+
+def test_the_floor_itself_is_accepted():
+    """The boundary, pinned, so the guard cannot drift one off.
+
+    A validator written as `<= MINIMUM` would reject the very value the error
+    message tells the operator to set — the most infuriating possible outcome
+    of following the instructions.
+    """
+    from pullbackup.config import MIN_AUTH_STORE_MAX_ENTRIES, load_settings
+
+    loaded = load_settings(
+        {
+            "PULLBACKUP_HTTP_BASIC_USERNAME": USERNAME,
+            "PULLBACKUP_HTTP_BASIC_PASSWORD": PASSWORD,
+            "PULLBACKUP_AUTH_STORE_MAX_ENTRIES": str(MIN_AUTH_STORE_MAX_ENTRIES),
+        },
+        env_file=None,
+    )
+
+    assert loaded.auth_store_max_entries == MIN_AUTH_STORE_MAX_ENTRIES
+
+
+def test_the_default_clears_the_floor():
+    """The shipped default must not be a value the loader would refuse."""
+    from pullbackup.config import MIN_AUTH_STORE_MAX_ENTRIES, Settings
+
+    assert Settings.model_fields["auth_store_max_entries"].default >= MIN_AUTH_STORE_MAX_ENTRIES
+
+
+def test_at_the_floor_a_new_client_can_still_be_locked_out(store_cap):
+    """The behaviour the floor exists to protect, asserted directly.
+
+    This is the discriminator. A floor that merely rejects a number proves
+    nothing; what matters is that every ACCEPTED cap still throttles. At the
+    smallest accepted value, with a lockout already occupying the protected
+    tier, a fresh client must still reach its own lockout.
+
+    The rejected value is measured in the same test so the contrast is not
+    taken on trust: at cap=1 the same fresh client survives all eight attempts
+    with retry_after 0 every time.
+    """
+    from pullbackup.config import MIN_AUTH_STORE_MAX_ENTRIES
+
+    def fresh_client_retry_afters(cap: int) -> list[int]:
+        store_cap(cap)
+        http_auth.reset_auth_state()
+        now = time.time()
+        for _ in range(http_auth.LOGIN_MAX_FAILURES):
+            http_auth.record_failed_login("198.51.100.1", now=now)
+        assert http_auth.login_throttle_retry_after("198.51.100.1", now=now) > 0, (
+            "fixture is wrong: the first client never locked out"
+        )
+        retry_afters = []
+        for _ in range(8):
+            http_auth.record_failed_login("203.0.113.9", now=now)
+            retry_afters.append(http_auth.login_throttle_retry_after("203.0.113.9", now=now))
+        return retry_afters
+
+    at_floor = fresh_client_retry_afters(MIN_AUTH_STORE_MAX_ENTRIES)
+    at_one = fresh_client_retry_afters(1)
+
+    assert at_one == [0] * 8, (
+        "the reproduction no longer reproduces; cap=1 is supposed to leave the "
+        f"throttle off, but produced {at_one}"
+    )
+    assert any(at_floor), (
+        f"at the floor of {MIN_AUTH_STORE_MAX_ENTRIES} a fresh client survived "
+        f"eight failed logins with retry_after {at_floor}; every accepted cap "
+        "must still be able to throttle a client that is not already locked out"
+    )
+
+
+def test_the_env_example_documents_the_minimum():
+    """An operator must not have to trigger the error to learn the floor.
+
+    The assertion is a regex requiring the word "minimum" adjacent to the exact
+    number, not a substring search. A plain `"100" in text` check was written
+    first and SURVIVED mutation: `100` occurs inside the documented default
+    `100000`, so the test passed against an .env.example that documented no
+    minimum at all.
+    """
+    import re
+    from pathlib import Path
+
+    from pullbackup.config import MIN_AUTH_STORE_MAX_ENTRIES
+
+    example = (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+    pattern = rf"[Mm]inimum {MIN_AUTH_STORE_MAX_ENTRIES}(?!\d)"
+    assert re.search(pattern, example), (
+        "the minimum accepted cap is undocumented; the loader refuses values "
+        f"below {MIN_AUTH_STORE_MAX_ENTRIES} and .env.example does not say so "
+        f"(looked for /{pattern}/)"
+    )
