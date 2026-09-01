@@ -33,9 +33,15 @@ def test_resolve_destination_rejects_a_path_outside_every_root(dest_root, tmp_pa
         fs.resolve_destination(str(tmp_path / "elsewhere" / "task"))
 
 
-def test_resolve_destination_rejects_the_configured_root_itself(dest_root):
-    with pytest.raises(fs.PathNotAllowed):
-        fs.resolve_destination(str(dest_root))
+def test_resolve_destination_accepts_the_configured_root_itself(dest_root):
+    """A dedicated per-task mount is a legitimate destination.
+
+    This assertion was inverted: it previously required rejection, which broke
+    every task whose `local_path` is exactly its own least-privilege bind mount.
+    See tests/test_dedicated_destination_roots.py for the regression and the
+    reasoning.
+    """
+    assert fs.resolve_destination(str(dest_root)) == dest_root.resolve()
 
 
 def test_resolve_destination_rejects_a_sibling_sharing_the_root_name_prefix(
@@ -109,27 +115,24 @@ def test_browse_still_allows_the_configured_root_itself(dest_root):
     assert fs.resolve_allowed(str(dest_root)) == dest_root.resolve()
 
 
-def test_resolve_destination_rejects_a_nested_root_shadowed_by_an_outer_root(
+def test_resolve_destination_binds_a_nested_root_to_itself_not_an_outer_root(
     tmp_path, monkeypatch
 ):
-    """A configured root must stay unwritable even when nested inside another root.
+    """A nested configured root selects itself, in either declaration order.
 
-    With roots `/backups,/backups/critical`, evaluating the exact-root rejection
-    per-iteration skips `/backups/critical` for its own root but then accepts it as a
-    descendant of `/backups`, exposing the whole `critical` root to `--delete`.
+    Previously this asserted a nested root was unwritable. That prohibition is
+    gone, but the ordering property it protected still matters and is now
+    stronger: the destination must bind to the MOST SPECIFIC containing root,
+    since that is the root `walk_destination` opens and pins.
     """
     outer = tmp_path / "backups"
     nested = outer / "critical"
     nested.mkdir(parents=True)
-    monkeypatch.setattr(fs.settings, "dest_roots", f"{outer},{nested}")
 
-    with pytest.raises(fs.PathNotAllowed):
-        fs.resolve_destination(str(nested))
-
-    # Ordering must not matter: the same must hold with the roots declared in reverse.
-    monkeypatch.setattr(fs.settings, "dest_roots", f"{nested},{outer}")
-    with pytest.raises(fs.PathNotAllowed):
-        fs.resolve_destination(str(nested))
+    for roots in (f"{outer},{nested}", f"{nested},{outer}"):
+        monkeypatch.setattr(fs.settings, "dest_roots", roots)
+        resolved, root = fs._resolve_with_root(str(nested))
+        assert (resolved, root) == (nested.resolve(), nested.resolve())
 
     # A descendant of the nested root remains a legitimate write target.
     assert fs.resolve_destination(str(nested / "task")) == nested.resolve() / "task"
@@ -151,17 +154,18 @@ def test_task_input_rejects_an_rsync_destination_outside_the_roots(
         )
 
 
-def test_task_input_rejects_the_configured_root_itself(dest_root):
+def test_task_input_accepts_the_configured_root_itself(dest_root):
+    """The production regression, through the API acceptance boundary."""
     from pullbackup.api import tasks as tasks_api
 
-    with pytest.raises(ValueError):
-        tasks_api.TaskIn(
-            name="root-write",
-            source_id=1,
-            remote_path="/remote/data",
-            local_path=str(dest_root),
-            cron="0 0 * * *",
-        )
+    accepted = tasks_api.TaskIn(
+        name="root-write",
+        source_id=1,
+        remote_path="/remote/data",
+        local_path=str(dest_root),
+        cron="0 0 * * *",
+    )
+    assert accepted.local_path == str(dest_root)
 
 
 def test_task_input_rejects_a_symlinked_rsync_destination(dest_root, tmp_path):

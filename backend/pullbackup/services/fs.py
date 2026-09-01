@@ -46,15 +46,21 @@ def _resolve_with_root(path: str) -> tuple[Path, Path]:
     all reach it, so a persisted value written before this validation existed can
     never reach `mkdir`/`rsync`.
 
-    Unlike `resolve_allowed` (a read-only browse helper) this REJECTS a configured
-    root itself: writing directly into a bind-mounted root is out of contract, and
-    accepting it would let `--delete` operate on the whole root.
+    A configured root is itself a valid destination. The operator decides what a
+    root IS: a dedicated per-task bind mount (`/mnt/user/gitea:/mnt/dest/gitea`)
+    exposes strictly less of the host than mounting the shared parent merely to
+    manufacture a descendant path, so prohibiting the exact root pushed
+    deployments toward the weaker boundary. Containment is what this resolver
+    enforces, not depth.
 
-    The exact-root rejection is evaluated against EVERY configured root before any
-    descendant match is considered. Checking it per-iteration is unsafe when roots
-    overlap: with `/backups,/backups/critical`, the destination `/backups/critical` is
-    skipped as an exact match for the second root but would then be accepted as a
-    descendant of the first, exposing an entire configured root to `--delete`.
+    When roots overlap, the destination binds to the MOST SPECIFIC containing
+    root, not to whichever happens to be declared first. Ordering must not be
+    observable: with `/backups,/backups/critical`, both `/backups/critical` and
+    `/backups/critical/task` bind to `/backups/critical` in either declaration
+    order. That is what the descriptor-pinned traversal in `walk_destination`
+    starts from, so a first-match rule would make the same configuration open a
+    different root descriptor depending on the order of an env var — and would
+    walk down through a narrower root it should have started at.
     """
     if not isinstance(path, str) or not path:
         raise PathNotAllowed("destination path is empty")
@@ -71,15 +77,12 @@ def _resolve_with_root(path: str) -> tuple[Path, Path]:
         # exception escapes as an internal error instead of a normal rejection.
         raise PathNotAllowed(f"destination path cannot be resolved: {error}") from error
     roots = _canonical_roots()
-    if any(resolved == root for root in roots):
-        raise PathNotAllowed(f"{path} is a configured destination root")
-    for root in roots:
-        try:
-            resolved.relative_to(root)
-        except ValueError:
-            continue
-        return resolved, root
-    raise PathNotAllowed(f"{path} is not inside an allowed destination root")
+    containing = [root for root in roots if resolved == root or root in resolved.parents]
+    if not containing:
+        raise PathNotAllowed(f"{path} is not inside an allowed destination root")
+    # Most specific wins. Canonical absolute paths, so component count is a total
+    # order over any chain of nested roots and cannot depend on declaration order.
+    return resolved, max(containing, key=lambda root: len(root.parts))
 
 
 class PinnedDestination:

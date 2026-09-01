@@ -17,6 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `retry_after` 0 each time. The throttle was absent rather than broken, and
   nothing warned.
 
+### Fixed
+
+- An rsync task may again write to a destination that is exactly one of the
+  configured destination roots. 0.12.0's destination hardening rejected it, so
+  tasks using a dedicated, least-privilege per-task bind mount failed before
+  rsync with `PathNotAllowed: <path> is a configured destination root`. The rule
+  worked against its own intent: it forced operators to mount a broader parent
+  purely to manufacture a descendant path. Containment is unchanged — a
+  destination must still canonicalize to a configured root or a path beneath
+  one, with every other control (control-character rejection, symlink and
+  traversal handling, no-follow descriptor-pinned execution) intact.
+- When configured roots overlap, a destination now binds to the most specific
+  containing root instead of the first one declared. Previously
+  `/backups,/backups/critical` and `/backups/critical,/backups` resolved the
+  same destination against different roots, which is the root the pinned
+  traversal opens.
+
 ## [0.12.0] - 2026-08-31
 
 ### Security
