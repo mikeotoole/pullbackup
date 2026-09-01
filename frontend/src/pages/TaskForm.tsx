@@ -113,12 +113,13 @@ export function TaskForm() {
 
   const save = useMutation({
     mutationFn: () => {
-      // rsync: local_path must be under a configured dest root. syncoid: it's a ZFS dataset name.
+      // rsync: local_path must be a configured dest root or beneath one.
+      // syncoid: it's a ZFS dataset name.
       if (!isSyncoid) {
         const lp = (form.local_path ?? "").trim();
         const rootMatch = roots.some(r => lp === r || lp.startsWith(r.endsWith("/") ? r : r + "/"));
         if (!rootMatch) {
-          throw new Error("Local path must be beneath one of the configured destination roots.");
+          throw new Error("Local path must be one of the configured destination roots, or beneath one.");
         }
       }
       return editing ? api.updateTask(Number(id), form) : api.createTask(form);

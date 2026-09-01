@@ -118,9 +118,9 @@ def test_api_still_rejects_an_out_of_root_destination(dest_root, tmp_path):
         _task_in(str(tmp_path / "outside" / "task"))
 
 
-def test_api_still_rejects_the_configured_root_itself(dest_root):
-    with pytest.raises(ValueError):
-        _task_in(str(dest_root))
+def test_api_still_accepts_the_configured_root_itself(dest_root):
+    """Inverted with the contract: a dedicated root mount is a valid destination."""
+    assert _task_in(str(dest_root)).local_path == str(dest_root)
 
 
 def test_api_leaves_syncoid_validation_alone(dest_root, monkeypatch):

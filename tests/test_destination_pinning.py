@@ -100,9 +100,18 @@ def test_open_destination_rejects_a_path_outside_every_root(dest_root, tmp_path)
         fs.open_destination(str(tmp_path / "elsewhere" / "task"), create=True)
 
 
-def test_open_destination_rejects_the_configured_root_itself(dest_root):
-    with pytest.raises(fs.PathNotAllowed):
-        fs.open_destination(str(dest_root))
+def test_open_destination_pins_the_configured_root_itself(dest_root):
+    """The root is a valid destination, and pinning it opens that exact inode.
+
+    Previously asserted rejection. The descriptor must still be the validated
+    directory rather than a re-walked pathname, so this checks inode identity
+    rather than merely that no exception was raised.
+    """
+    import os
+
+    with fs.open_destination(str(dest_root)) as pinned:
+        assert pinned.path == dest_root.resolve()
+        assert os.fstat(pinned.fileno()).st_ino == os.stat(dest_root).st_ino
 
 
 def test_open_destination_rejects_a_component_swapped_during_traversal(
