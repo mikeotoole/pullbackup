@@ -99,11 +99,43 @@ def test_the_release_section_still_names_both_shipped_fixes():
 # --------------------------------------------------------------------------
 
 
-def test_a_fresh_empty_unreleased_section_is_left_for_the_next_change():
-    body = _body("Unreleased")
-    assert body.strip() == "", (
-        "[Unreleased] must be left empty after a release so the next change "
-        f"has somewhere to go; it still contains: {body.strip()[:200]!r}"
+def test_a_fresh_unreleased_section_exists_for_the_next_change():
+    """The release must leave an [Unreleased] heading behind, and must not
+    leave the shipped bullets sitting in it.
+
+    This deliberately does NOT assert the section is byte-empty. It did, and
+    that made the test unsatisfiable for every subsequent change: the moment
+    any branch added a bullet under [Unreleased] - which is exactly where the
+    heading's own failure message says the next change should go - this test
+    failed. Verified against clean main by inserting an unrelated hypothetical
+    bullet: 1 failed, no PR of any kind could have been green.
+
+    The property worth pinning is that a release MOVES its bullets rather than
+    copying them, so nothing shipped in [RELEASE_VERSION] is left duplicated
+    under [Unreleased]. A new entry added after the release is correct and must
+    not fail.
+    """
+    unreleased = _body("Unreleased")
+    released = _body(RELEASE_VERSION)
+
+    # The heading must still exist; _body raises if it does not.
+    def _bullets(section: str) -> set[str]:
+        # Collapse internal whitespace before comparing. A mechanical
+        # copy-instead-of-move is verbatim by construction, but a copy that
+        # picks up a re-wrap or a double space would otherwise slip through the
+        # set comparison while still being the duplication this guards against.
+        return {
+            " ".join(line.split())
+            for line in section.splitlines()
+            if line.strip().startswith("- ")
+        }
+
+    released_bullets = _bullets(released)
+    unreleased_bullets = _bullets(unreleased)
+    leaked = released_bullets & unreleased_bullets
+    assert not leaked, (
+        f"the release copied bullets instead of moving them; these appear under "
+        f"both [Unreleased] and [{RELEASE_VERSION}]: {sorted(leaked)[:3]}"
     )
 
 
