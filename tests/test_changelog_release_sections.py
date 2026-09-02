@@ -6,12 +6,12 @@ gets "tidied", a technical detail is lost, and the changelog stops describing
 what actually shipped. Nothing catches that in review, because a reviewer reads
 the new text and it looks fine.
 
-So the guard here is not "a 0.12.1 section exists" -- it is that the 0.12.1
+So the guard here is not "a 0.13.0 section exists" -- it is that the 0.13.0
 section body is *byte-for-byte* the [Unreleased] body that existed on the exact
-release base, ``6f0dbfdde5599b2b1e0359467e20364ff7ee52a3``. The digest below was
+release base, ``3b39e4ddd59ca3748de030462025da1fbef6f758``. The digest below was
 taken from that commit before the move:
 
-    git show 6f0dbfdde5599b2b1e0359467e20364ff7ee52a3:CHANGELOG.md
+    git show 3b39e4ddd59ca3748de030462025da1fbef6f758:CHANGELOG.md
 
 The digest is over the stripped section body, so re-spacing around the heading
 is allowed and re-wording is not.
@@ -31,14 +31,14 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = REPOSITORY_ROOT / "CHANGELOG.md"
 
-RELEASE_VERSION = "0.12.1"
+RELEASE_VERSION = "0.13.0"
 
 # sha256 of the stripped [Unreleased] body at the release base commit
-# 6f0dbfdde5599b2b1e0359467e20364ff7ee52a3 -- the auth-store cap validation
-# (Security) plus the dedicated/most-specific destination-root correction
-# (Fixed). This is the content 0.12.1 releases.
+# 3b39e4ddd59ca3748de030462025da1fbef6f758 -- the itsdangerous session-signing
+# swap (Changed), whose user-visible consequence is that upgrading signs every
+# existing session out once. This is the content 0.13.0 releases.
 UNRELEASED_BODY_AT_BASE_SHA256 = (
-    "6654e53d91240745e794d322ce99bdeccf0acfb40c822713065e8dcbe9dc0cd3"
+    "bc08fcdc9e95f76f57a9bf40d98c5be1bd851d630d22852c6c78f219ccca5f16"
 )
 
 HEADING = re.compile(r"^## \[([^\]]+)\](?: - (\d{4}-\d{2}-\d{2}))?\s*$", re.M)
@@ -80,18 +80,26 @@ def test_the_release_section_preserves_the_unreleased_body_verbatim():
     )
 
 
-def test_the_release_section_still_names_both_shipped_fixes():
+def test_the_release_section_still_names_what_shipped():
     """A digest tells you *that* something changed, not *what* is missing.
 
-    These two are the substance of 0.12.1, so they are named explicitly: a
-    future rewrite that drops one gets a readable failure rather than a hex
-    mismatch.
+    These are the substance of 0.13.0, so they are named explicitly: a future
+    rewrite that drops one gets a readable failure rather than a hex mismatch.
+
+    Each release retargets this test to its own contents. 0.12.1 named the
+    auth-store cap and the destination-root correction; 0.13.0 ships the
+    session-signing swap, so it names that instead. The digest above still
+    pins the body byte-for-byte -- this is the readable half of the same
+    guard, not a second, weaker one.
     """
     body = _body(RELEASE_VERSION)
-    assert "PULLBACKUP_AUTH_STORE_MAX_ENTRIES" in body
-    assert "is a configured destination root" in body
-    assert "### Security" in body
-    assert "### Fixed" in body
+    assert "itsdangerous" in body
+    # The user-visible consequence, which is the reason this is a MINOR bump
+    # and not a patch: existing sessions do not survive the upgrade. If a
+    # future edit tidies this sentence away, the release stops warning about
+    # the one thing an operator needs to know before deploying it.
+    assert "signs every existing session out once" in body
+    assert "### Changed" in body
 
 
 # --------------------------------------------------------------------------
