@@ -53,7 +53,13 @@ export function TasksList() {
               <button
                 key={f}
                 onClick={() => setTypeFilter(f)}
-                className={`px-2 py-1 rounded border capitalize ${typeFilter === f ? "bg-accent text-white border-accent" : "border-border text-muted hover:text-white"}`}
+                // No text-transform utility here. One used to sit in this class
+                // list and painted the lowercase values as "All"/"Rsync"/"Zfs".
+                // Chrome stays lower case; only the run-state pill shouts, and
+                // it does so from StatusPill. The offending class name is left
+                // unwritten on purpose: Tailwind scans this file for candidate
+                // class names and would re-emit the now-dead rule.
+                className={`px-2 py-1 rounded border ${typeFilter === f ? "bg-accent text-white border-accent" : "border-border text-muted hover:text-white"}`}
               >
                 {f}
               </button>

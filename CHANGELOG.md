@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The task-list type filter chips now read `all`, `rsync` and `zfs` instead of
+  `All`, `Rsync` and `Zfs`. The underlying values were always lower case; a
+  Tailwind `capitalize` utility on the chip was re-casing them at paint time,
+  which is why the labels disagreed with every other piece of UI chrome.
+
 ## [0.13.0] - 2026-09-02
 
 ### Changed
