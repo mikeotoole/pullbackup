@@ -120,6 +120,49 @@ def test_npm_invocations_have_node_on_path():
         )
 
 
+def test_backend_gate_creates_its_configured_data_directory():
+    """Guard the 5 collection errors that made a green suite exit 1.
+
+    The backend gate sets PULLBACKUP_DATA_DIR, but nothing creates it. SQLModel
+    opens the SQLite file without creating its parent, so the fixtures in
+    tests/test_bounded_auth_stores.py die with
+    "sqlite3.OperationalError: unable to open database file". The run reads
+    "341 passed, 3 skipped, 5 errors" and exits 1 — an infrastructure failure
+    that looks exactly like a code verdict.
+
+    The mkdir must reference the configured env var, not a second hard-coded
+    literal: two independent copies of the path can drift apart silently, and
+    the drift would only surface as this same opaque failure.
+    """
+    steps = [step for step in _steps(WORKFLOW.read_text()) if "pytest" in step]
+    assert steps, "expected at least one step invoking pytest"
+
+    for step in steps:
+        name = step.splitlines()[0].split("- name: ", 1)[1].strip()
+        env_block, run_block = step.split("        run:", 1)
+        assert re.search(
+            r"^\s*PULLBACKUP_DATA_DIR:\s*\S+\s*$", env_block, flags=re.MULTILINE
+        ), f"step {name!r} runs pytest without declaring PULLBACKUP_DATA_DIR"
+
+        lines = run_block.splitlines()
+        mkdir_lines = [
+            index
+            for index, line in enumerate(lines)
+            if re.search(r'^\s*mkdir -p "\$(\{)?PULLBACKUP_DATA_DIR(\})?"\s*$', line)
+        ]
+        pytest_lines = [
+            index for index, line in enumerate(lines) if re.search(r"(^|\s)pytest\s", line)
+        ]
+        assert mkdir_lines, (
+            f"step {name!r} must create the configured PULLBACKUP_DATA_DIR "
+            'with `mkdir -p "$PULLBACKUP_DATA_DIR"`; SQLite will not create '
+            "the parent directory of its database file"
+        )
+        assert min(mkdir_lines) < min(pytest_lines), (
+            f"step {name!r} must create PULLBACKUP_DATA_DIR before the backend gate"
+        )
+
+
 def test_uv_uses_copy_link_mode():
     """Guard the uv clone failure on the runner's overlay filesystem.
 
