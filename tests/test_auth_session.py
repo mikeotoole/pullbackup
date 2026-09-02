@@ -33,6 +33,12 @@ def basic_auth(username: str, password: str) -> str:
     return f"Basic {encoded}"
 
 
+def _flip_first_char(value: str) -> str:
+    """Change one character of a token segment without changing its shape."""
+    replacement = "B" if value[0] == "A" else "A"
+    return replacement + value[1:]
+
+
 @pytest.fixture
 def configured(monkeypatch):
     """A valid single-user credential, with throttle and revocations reset."""
@@ -193,19 +199,30 @@ async def test_logout_makes_the_same_cookie_stop_working(configured):
 
 @pytest.mark.asyncio
 async def test_a_tampered_cookie_is_refused(configured):
+    """Tamper detection, asserted through the PUBLIC token only.
+
+    Deliberately written against the string the server actually hands out
+    rather than against any encoding helper, so it holds whoever does the
+    signing. It survived the swap from the hand-rolled HMAC signer to
+    ``itsdangerous`` unchanged in intent: the only edit was to stop importing a
+    private base64 helper that no longer exists.
+    """
     async with client() as c:
         await c.post("/api/auth/login", json={"username": USERNAME, "password": PASSWORD})
-        body, _, signature = c.cookies[COOKIE].partition(".")
-        forged = http_auth._b64url_encode(b'{"iat":9999999999,"sid":"forged"}')
+        token = c.cookies[COOKIE]
+        head, _, signature = token.rpartition(".")
 
         responses = [
-            # signature swapped for another valid-looking one
-            await c.get("/api/system/info", headers={"Cookie": f"{COOKIE}={body}.{signature[::-1]}"}),
+            # signature replaced with another valid-looking one
+            await c.get("/api/system/info", headers={"Cookie": f"{COOKIE}={head}.{signature[::-1]}"}),
             # payload rewritten, original signature kept
-            await c.get("/api/system/info", headers={"Cookie": f"{COOKIE}={forged}.{signature}"}),
-            # unsigned payload
-            await c.get("/api/system/info", headers={"Cookie": f"{COOKIE}={forged}"}),
-            # structurally valid base64, semantically junk
+            await c.get(
+                "/api/system/info",
+                headers={"Cookie": f"{COOKIE}={_flip_first_char(head)}.{signature}"},
+            ),
+            # signature removed entirely
+            await c.get("/api/system/info", headers={"Cookie": f"{COOKIE}={head}"}),
+            # structurally plausible, semantically junk
             await c.get("/api/system/info", headers={"Cookie": f"{COOKIE}=not-a-token"}),
         ]
 

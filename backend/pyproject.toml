@@ -16,6 +16,11 @@ dependencies = [
     "python-socketio[asyncio_client]>=5.11",
     "sse-starlette>=2.1",
     "python-multipart>=0.0.12",
+    # Session-cookie signing. Pallets (Flask/Jinja/Click), ~15 years old, and
+    # already what Starlette's own SessionMiddleware uses internally — so the
+    # stack trusts it whether or not we declare it. Replaces ~100 lines of
+    # hand-rolled HMAC + base64url + expiry code we would otherwise own.
+    "itsdangerous>=2.2",
 ]
 
 [build-system]

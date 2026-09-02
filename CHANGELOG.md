@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Session cookies are now signed with `itsdangerous` (Pallets, and what
+  Starlette's own `SessionMiddleware` uses) instead of ~100 lines of
+  hand-rolled HMAC, base64url and issued-at handling. Expiry, the 60-second
+  clock-skew tolerance, revocation and the login throttle are unchanged and
+  stay in this codebase. **Upgrading signs every existing session out once**:
+  the token format changed and a cookie from the old signer is deliberately
+  rejected rather than reinterpreted.
+
 ## [0.12.1] - 2026-08-31
 
 ### Security

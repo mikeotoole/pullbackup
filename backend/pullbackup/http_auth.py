@@ -2,9 +2,7 @@
 # Copyright (C) 2026 Mike O'Toole
 import base64
 import binascii
-import hmac
 import ipaddress
-import json
 import logging
 import secrets
 import threading
@@ -15,6 +13,7 @@ from hashlib import sha256
 from hmac import compare_digest
 from typing import Any
 
+from itsdangerous import BadData, TimestampSigner, URLSafeTimedSerializer
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -512,22 +511,18 @@ def _cookie_value(cookie_header: str, name: str) -> str:
     return ""
 
 
-def _b64url_encode(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
-
-
-def _b64url_decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
 def _signing_key() -> bytes:
-    """The HMAC key for session cookies.
+    """The signing key for session cookies.
 
     ``PULLBACKUP_SESSION_SECRET`` wins when set. Otherwise the key is derived
     from the configured password, which is what makes an upgrade need no new
     configuration — and, deliberately, makes CHANGING the password invalidate
     every session issued under the old one. The username is mixed in too so a
     username change is equally invalidating.
+
+    Unchanged by the move to ``itsdangerous``: the SOURCE of the secret and the
+    way it is configured are exactly as before. Only the code that turns a
+    secret into a token changed.
     """
     explicit = settings.session_secret
     if explicit:
@@ -540,39 +535,126 @@ def _signing_key() -> bytes:
     ).digest()
 
 
+# Namespaces the signature. Bumped from the (implicit) v1 hand-rolled format on
+# purpose: see `_serializer` for why every pre-existing cookie must stop working
+# rather than be carried across.
+_SESSION_SALT = "pullbackup.session.v2"
+
+# How far in the FUTURE a token's issue time may sit and still be accepted.
+# It can only come from a clock jump or a forgery attempt — and the signature is
+# verified before the age is looked at, so a future timestamp on a token that
+# got this far is a clock jump, not a forgery. Accepting an unbounded future
+# would extend the lifetime past the configured maximum, hence the cap.
+_CLOCK_SKEW_TOLERANCE_SECONDS = 60
+
+
+class _ExplicitClockSigner(TimestampSigner):
+    """A ``TimestampSigner`` whose clock is supplied rather than read.
+
+    ``itsdangerous`` stamps ``int(time.time())``. This module resolves ``now``
+    ONCE per request and threads it through every check, so that the revocation
+    lookup and the age test cannot disagree about what time it is (PR #20). That
+    discipline has to reach minting too — ``issue_session(now=...)`` is how the
+    revocation-retention proof in ``tests/test_bounded_auth_stores.py`` mints a
+    token at a chosen instant.
+
+    Overriding the single clock call is the smallest possible seam: signing,
+    encoding, timestamp format and tamper detection all remain the library's.
+    """
+
+    def __init__(self, *args: Any, issued_at: float | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._issued_at = issued_at
+
+    def get_timestamp(self) -> int:
+        if self._issued_at is None:
+            return super().get_timestamp()
+        return int(self._issued_at)
+
+
+def _serializer(issued_at: float | None = None) -> URLSafeTimedSerializer:
+    """The session-token serializer.
+
+    ``itsdangerous`` replaces what used to be ~100 lines of HMAC, base64url and
+    issued-at handling owned by this file. ``URLSafeTimedSerializer`` produces
+    ``payload.timestamp.signature``, verifies the signature in constant time,
+    and refuses anything tampered with.
+
+    Two things are deliberately still ours:
+
+    * **Expiry.** ``loads(max_age=...)`` measures age against the library's own
+      ``time.time()``, which would break the single-clock discipline above and
+      cannot express the ``-60`` future tolerance. So the signature check is the
+      library's and the age check stays in ``session_is_valid``, judged against
+      the caller's ``now``.
+    * **Revocation.** A signed token is valid until it expires by definition, so
+      "logout kills this cookie" needs server-side state whatever signs it.
+      ``_revoked`` is unchanged.
+
+    Built per call rather than cached because the key is derived from live
+    settings: caching it would make a password change stop invalidating
+    sessions, which is a security property with a test on it.
+
+    ``salt`` namespaces the signature. It is bumped to v2 because the token
+    FORMAT changed, and a cookie minted by the old hand-rolled signer must be
+    REJECTED rather than silently reinterpreted. The consequence is stated
+    rather than incidental: **on the deploy that ships this change, every
+    existing session is logged out once.** For a single-user app that is a
+    single re-login, and it is the safe direction — the alternative is keeping
+    the old verifier alive so that two signing implementations must both stay
+    correct forever, which is exactly the burden this change exists to shed.
+    """
+    return URLSafeTimedSerializer(
+        _signing_key(),
+        salt=_SESSION_SALT,
+        signer=_ExplicitClockSigner,
+        # itsdangerous DEFAULTS to HMAC-SHA1. The retired hand-rolled signer
+        # used HMAC-SHA256, so leaving the default in place would quietly
+        # shorten the MAC from 256 to 160 bits as a side effect of a change
+        # whose entire point was to alter nothing but the implementation.
+        # Neither is broken for this use, but a library swap must not weaken a
+        # property it was not asked to touch. Pinned by
+        # test_the_mac_is_still_sha256_not_the_library_default.
+        signer_kwargs={"issued_at": issued_at, "digest_method": sha256},
+    )
+
+
 def issue_session(now: float | None = None) -> str:
     """Mint a signed session token. Callers must check credentials first."""
-    payload = json.dumps(
-        {"sid": secrets.token_urlsafe(16), "iat": int(now if now is not None else time.time())},
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    body = _b64url_encode(payload)
-    signature = hmac.new(_signing_key(), body.encode(), sha256).digest()
-    return f"{body}.{_b64url_encode(signature)}"
+    return _serializer(issued_at=now if now is not None else time.time()).dumps(
+        {"sid": secrets.token_urlsafe(16)}
+    )
+
+
+def _verified_session(token: str) -> tuple[str, float] | None:
+    """``(sid, issued_at)`` for a correctly signed token, else ``None``.
+
+    Signature only. Age and revocation are the caller's business, because both
+    have to be judged against a single caller-supplied ``now``.
+    """
+    if not token:
+        return None
+    try:
+        payload, issued_at = _serializer().loads(token, return_timestamp=True)
+    except BadData:
+        # Covers the whole family: bad signature, wrong salt (so every token
+        # from the previous signer), truncated token, malformed base64,
+        # undecodable JSON.
+        return None
+    if not isinstance(payload, dict):
+        return None
+    session_id = payload.get("sid")
+    if not isinstance(session_id, str):
+        return None
+    return session_id, issued_at.timestamp()
 
 
 def session_is_valid(token: str, now: float | None = None) -> bool:
     """True only for a well-formed, correctly signed, unexpired, unrevoked token."""
-    if not token:
+    verified = _verified_session(token)
+    if verified is None:
         return False
-    body, separator, supplied_signature = token.partition(".")
-    if not separator:
-        return False
-    try:
-        expected = hmac.new(_signing_key(), body.encode(), sha256).digest()
-        if not compare_digest(expected, _b64url_decode(supplied_signature)):
-            return False
-        claims = json.loads(_b64url_decode(body))
-    except (ValueError, binascii.Error, UnicodeDecodeError):
-        return False
-
-    if not isinstance(claims, dict):
-        return False
-    session_id = claims.get("sid")
-    issued_at = claims.get("iat")
-    if not isinstance(session_id, str) or not isinstance(issued_at, int):
-        return False
+    session_id, issued_at = verified
 
     now = time.time() if now is None else now
     # Checked against the SAME clock as the age test below. Reading the
@@ -585,7 +667,9 @@ def session_is_valid(token: str, now: float | None = None) -> bool:
     # A future-dated token is rejected as well: it can only come from a clock
     # jump or a forgery attempt, and accepting it would extend the lifetime
     # past the configured maximum.
-    return -60 <= age <= settings.session_max_age_seconds
+    return (
+        -_CLOCK_SKEW_TOLERANCE_SECONDS <= age <= settings.session_max_age_seconds
+    )
 
 
 def revoke_session(token: str, now: float | None = None) -> None:
@@ -607,14 +691,10 @@ def revoke_session(token: str, now: float | None = None) -> None:
     now = time.time() if now is None else now
     if not session_is_valid(token, now=now):
         return
-    body, _, _ = token.partition(".")
-    try:
-        claims = json.loads(_b64url_decode(body))
-    except (ValueError, binascii.Error, UnicodeDecodeError):  # pragma: no cover
-        return  # unreachable: session_is_valid already parsed this
-    sid = claims.get("sid")
-    if isinstance(sid, str):
-        _revoked.set(sid, True, now=now)
+    verified = _verified_session(token)
+    if verified is None:  # pragma: no cover
+        return  # unreachable: session_is_valid already verified this
+    _revoked.set(verified[0], True, now=now)
 
 
 def reset_auth_state() -> None:

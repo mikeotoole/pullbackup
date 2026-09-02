@@ -84,6 +84,12 @@ secret if you would rather rotate the password without signing everyone out.
 Sessions are held in process memory, so restarting the container also signs
 everyone out.
 
+The signing itself is [`itsdangerous`](https://itsdangerous.palletsprojects.com/),
+the Pallets library Starlette's own `SessionMiddleware` uses. Expiry and
+revocation stay in this codebase: a signed token is valid until it expires by
+definition, so "logout kills this cookie" needs server-side state whatever
+signs the token.
+
 Repeated failed sign-ins from one address are locked out for 60 seconds after
 5 failures. HTTP Basic had no login endpoint to brute-force; a form does.
 
