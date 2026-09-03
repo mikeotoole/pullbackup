@@ -7,6 +7,7 @@ import { Sources } from "./pages/Sources";
 import { RunDetail } from "./pages/RunDetail";
 import { RunHistory } from "./pages/RunHistory";
 import { Login } from "./pages/Login";
+import { BrandMark } from "./components/BrandMark";
 import { api, LOGIN_PATH } from "./lib/api";
 
 export default function App() {
@@ -36,14 +37,7 @@ export default function App() {
       <header className="border-b border-border bg-panel">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center gap-x-6 gap-y-2">
           <div className="flex items-center gap-2 font-semibold text-lg">
-            <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
-              <rect width="32" height="32" rx="7" fill="#7c3aed" />
-              <g fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M16 5.5 V16.5" />
-                <path d="M10.8 11.7 L16 16.9 L21.2 11.7" />
-                <path d="M8 20.5 V25 H24 V20.5" />
-              </g>
-            </svg>
+            <BrandMark />
             pullbackup
           </div>
           <nav className="flex gap-4 text-sm">

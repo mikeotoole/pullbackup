@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { BrandMark } from "../components/BrandMark";
 
 export function Login() {
   const navigate = useNavigate();
@@ -29,14 +30,7 @@ export function Login() {
     <div className="min-h-screen flex items-start sm:items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-2 font-semibold text-lg mb-6">
-          <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
-            <rect width="32" height="32" rx="7" fill="#7c3aed" />
-            <g fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M16 5.5 V16.5" />
-              <path d="M10.8 11.7 L16 16.9 L21.2 11.7" />
-              <path d="M8 20.5 V25 H24 V20.5" />
-            </g>
-          </svg>
+          <BrandMark />
           pullbackup
         </div>
 

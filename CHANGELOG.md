@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across both layouts; each icon is `aria-hidden`/`focusable="false"` so screen
   readers announce the control once, and the 44px phone tap targets are intact.
 
+- The app icon is now a three-bar "layers" mark instead of an arrow dropping
+  into a storage tray. The old glyph read as *download*, which is the wrong
+  verb for a backup tool; the three bars — brightest to dimmest — read as
+  accumulated backup generations. The palette is the one shared across the
+  wider project family (background `#26262b` → `#161619` → `#0c0c0f`, signal
+  `#d3b6ff` → `#8b5cf6`) rather than the previous standalone flat violet. A
+  test pins the shipped `frontend/public/favicon.svg` by digest and asserts the
+  three distinct tones, so the mark cannot silently drift or be flattened.
+- The logo drawn inside the app — in the header and on the sign-in page — is
+  now the same three-bar mark as the icon. Both places previously inlined their
+  own copy of the retired glyph, so replacing the served asset alone would have
+  left the brand split in two. There is now a single `BrandMark` component and
+  a test that fails if either placement inlines an SVG again, or if the retired
+  artwork reappears anywhere under `frontend/src`. The `theme-color` used by
+  mobile browser chrome moves from the old flat violet to the app's own page
+  background, which is what actually sits behind it.
+
 ### Fixed
 
 - The browser no longer shows its own native Basic-auth credential dialog in
