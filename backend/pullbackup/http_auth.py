@@ -92,6 +92,61 @@ def _is_public_shell(path: str) -> bool:
 
 SESSION_COOKIE = "pullbackup_session"
 
+# The SPA stamps this on every API call it makes (frontend/src/lib/api.ts).
+# It is the deterministic half of the browser test below.
+_WEB_CLIENT_HEADER = b"x-pullbackup-client"
+_WEB_CLIENT_VALUE = "web"
+
+
+def _is_browser_subresource(headers: dict[bytes, bytes]) -> bool:
+    """True when a 401 here would pop the browser's native Basic dialog.
+
+    A browser shows its own credential prompt for ANY 401 carrying
+    ``WWW-Authenticate: Basic`` — a same-origin ``fetch()`` included. So the
+    SPA loads its shell signed-out, fires its first ``/api/*`` call, and the
+    operator gets the native dialog instead of our login form; only after
+    cancelling does the fetch reject and the router reach ``/login``. (An
+    earlier comment on this very code claimed fetch() was exempt. It is not;
+    Mike hit it on 0.13.0.)
+
+    Two independent signals, either of which is enough:
+
+      * ``Sec-Fetch-Mode`` other than ``navigate``. It is a forbidden header —
+        script cannot set or forge it, only the browser emits it — so its
+        presence is proof of a browser and its value distinguishes a
+        subresource fetch from a top-level navigation. curl and every scripted
+        client send nothing here and are unaffected.
+      * ``X-Pullbackup-Client: web``, which the SPA sets explicitly. Fetch
+        Metadata is only sent from secure contexts (https, or localhost), so a
+        deployment reached over plain http on a LAN address emits no
+        ``Sec-Fetch-*`` at all and the first signal goes silent. The explicit
+        header covers exactly that case, and ships in the same release.
+
+    A top-level ``navigate`` deliberately keeps the challenge: browsing
+    straight at ``/openapi.json`` should offer the dialog, because there the
+    native prompt is the intended way in and there is no SPA to redirect.
+
+    ``Accept: text/event-stream`` is a third signal, and it is not redundant.
+    ``EventSource`` (the live run-log stream on ``/runs/:id``) cannot carry a
+    custom header at all — the API forbids it — so on a plain-http deployment,
+    where Fetch Metadata is also absent, the other two signals both go silent
+    and a reconnect after the session expires would pop the dialog. A scripted
+    caller that sets this Accept loses the challenge, which is a fair trade: it
+    has already chosen a browser-shaped streaming API.
+    """
+    if headers.get(_WEB_CLIENT_HEADER, b"").decode(
+        "latin-1", errors="replace"
+    ).strip().lower() == _WEB_CLIENT_VALUE:
+        return True
+    accept = headers.get(b"accept", b"").decode("latin-1", errors="replace").lower()
+    if "text/event-stream" in accept:
+        return True
+    mode = headers.get(b"sec-fetch-mode")
+    if mode is None:
+        return False
+    return mode.decode("latin-1", errors="replace").strip().lower() != "navigate"
+
+
 logger = logging.getLogger(__name__)
 
 LOGIN_MAX_FAILURES = 5
@@ -865,18 +920,20 @@ class HttpBasicAuthMiddleware:
             session_is_valid(session_token)
             or _authorized(authorization, username, password)
         ):
+            # Tells the SPA where to send the operator instead of rendering a
+            # raw 401 body. Present either way.
+            response_headers = {"X-Pullbackup-Login": _LOGIN_PATH}
+            if not _is_browser_subresource(headers):
+                # Scripted clients, the compose healthcheck and a browser
+                # navigating straight at /openapi.json get the real challenge.
+                # A browser subresource fetch does NOT — see
+                # _is_browser_subresource for why the previous "fetch() is
+                # exempt" claim here was simply wrong.
+                response_headers["WWW-Authenticate"] = 'Basic realm="Pullback"'
             response = JSONResponse(
                 {"detail": "authentication required"},
                 status_code=401,
-                headers={
-                    # Kept: scripted clients rely on the Basic challenge, and
-                    # the SPA reaches the API through fetch(), which does not
-                    # surface a native Basic dialog for a 401 response.
-                    "WWW-Authenticate": 'Basic realm="Pullback"',
-                    # Tells the SPA where to send the operator instead of
-                    # rendering a raw 401 body.
-                    "X-Pullbackup-Login": _LOGIN_PATH,
-                },
+                headers=response_headers,
             )
             await response(scope, receive, send)
             return

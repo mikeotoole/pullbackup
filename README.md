@@ -76,6 +76,15 @@ curl -u "$PULLBACKUP_HTTP_BASIC_USERNAME:$PULLBACKUP_HTTP_BASIC_PASSWORD" \
   http://localhost:8000/api/tasks
 ```
 
+An unauthenticated `/api/*` request is always refused with `401`, but the
+`WWW-Authenticate: Basic` challenge on that refusal is omitted when the caller
+is recognisably a browser — a `Sec-Fetch-Mode` other than `navigate`, an
+`X-Pullbackup-Client: web` header (the UI sends it), or `Accept:
+text/event-stream`. Otherwise the browser would pop its own native credential
+dialog in front of the sign-in page. Scripted callers, the container
+healthcheck, and a browser *navigating* directly at `/openapi.json` all still
+receive the challenge, so `curl -u` and `--anyauth` are unaffected.
+
 Cookies are signed with `PULLBACKUP_SESSION_SECRET` when it is set. When it is
 not, the signing key is derived from the configured credential, so upgrading
 needs no new configuration — with the deliberate consequence that **changing

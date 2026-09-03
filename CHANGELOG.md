@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The browser no longer shows its own native Basic-auth credential dialog in
+  front of the sign-in page. Loading the UI signed out fired the first `/api/*`
+  call with no session cookie; the `401` answering it carried
+  `WWW-Authenticate: Basic`, and a browser pops its dialog for that header even
+  on a same-origin `fetch()`. Only after cancelling did the app route to
+  `/login`. The challenge is now omitted when the caller is recognisably a
+  browser — `Sec-Fetch-Mode` other than `navigate`, `X-Pullbackup-Client: web`
+  (which the UI now sends), or `Accept: text/event-stream` for the run-log
+  stream, which `EventSource` cannot mark any other way. Scripted callers, the
+  container healthcheck and a browser navigating directly at `/openapi.json`
+  still receive `WWW-Authenticate: Basic`, and an unauthenticated `/api/*`
+  request is still refused with `401` — never a 200, never a redirect.
+
 - The task-list type filter chips now read `all`, `rsync` and `zfs` instead of
   `All`, `Rsync` and `Zfs`. The underlying values were always lower case; a
   Tailwind `capitalize` utility on the chip was re-casing them at paint time,

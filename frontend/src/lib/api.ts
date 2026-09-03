@@ -84,14 +84,32 @@ export class UnauthenticatedError extends Error {
   }
 }
 
+/**
+ * Marks every request as coming from this SPA.
+ *
+ * The API answers an unauthenticated call with 401. If that 401 carries
+ * `WWW-Authenticate: Basic` the browser shows its own native credential
+ * dialog — yes, even for a same-origin `fetch()` — and the operator sees that
+ * instead of our login page. This header tells the middleware to omit the
+ * challenge (`_is_browser_subresource` in backend/pullbackup/http_auth.py)
+ * while curl and the compose healthcheck keep it.
+ *
+ * The backend also infers it from `Sec-Fetch-Mode`, but Fetch Metadata is only
+ * sent from a secure context, so a plain-http LAN deployment has nothing else
+ * to go on. This header must ship with that backend change or the popup stays.
+ */
+const CLIENT_HEADERS = { "X-Pullbackup-Client": "web" } as const;
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     // The session cookie is useless unless it actually rides along. Without
     // this the browser omits it for some fetch configurations and every call
     // looks unauthenticated.
     credentials: "same-origin",
     ...init,
+    // After the spread: a caller passing `headers` must not drop the client
+    // marker, or that one call pops the native dialog.
+    headers: { "Content-Type": "application/json", ...CLIENT_HEADERS, ...init?.headers },
   });
   if (r.status === 401) {
     // Send the operator to the login page rather than surfacing the raw 401
@@ -111,7 +129,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 async function postLogin(username: string, password: string): Promise<void> {
   const r = await fetch("/api/auth/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...CLIENT_HEADERS },
     credentials: "same-origin",
     body: JSON.stringify({ username, password }),
   });
