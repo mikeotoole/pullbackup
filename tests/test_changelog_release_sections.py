@@ -31,14 +31,13 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = REPOSITORY_ROOT / "CHANGELOG.md"
 
-RELEASE_VERSION = "0.13.0"
+RELEASE_VERSION = "0.13.1"
 
 # sha256 of the stripped [Unreleased] body at the release base commit
-# 3b39e4ddd59ca3748de030462025da1fbef6f758 -- the itsdangerous session-signing
-# swap (Changed), whose user-visible consequence is that upgrading signs every
-# existing session out once. This is the content 0.13.0 releases.
+# aea4d36c1cc3... -- the task-type filter chips no longer being re-cased by a
+# Tailwind `capitalize` utility (Fixed). This is the content 0.13.1 releases.
 UNRELEASED_BODY_AT_BASE_SHA256 = (
-    "bc08fcdc9e95f76f57a9bf40d98c5be1bd851d630d22852c6c78f219ccca5f16"
+    "e9c6121170df83002c82533bfb21ff07e8c8016e50d3f142ba2d1ad97b83dd66"
 )
 
 HEADING = re.compile(r"^## \[([^\]]+)\](?: - (\d{4}-\d{2}-\d{2}))?\s*$", re.M)
@@ -86,20 +85,20 @@ def test_the_release_section_still_names_what_shipped():
     These are the substance of 0.13.0, so they are named explicitly: a future
     rewrite that drops one gets a readable failure rather than a hex mismatch.
 
-    Each release retargets this test to its own contents. 0.12.1 named the
-    auth-store cap and the destination-root correction; 0.13.0 ships the
-    session-signing swap, so it names that instead. The digest above still
-    pins the body byte-for-byte -- this is the readable half of the same
-    guard, not a second, weaker one.
+    Each release retargets this test to its own contents. 0.13.0 named the
+    session-signing swap; 0.13.1 ships the filter-chip casing fix, so it names
+    that instead. The digest above still pins the body byte-for-byte -- this is
+    the readable half of the same guard, not a second, weaker one.
     """
     body = _body(RELEASE_VERSION)
-    assert "itsdangerous" in body
-    # The user-visible consequence, which is the reason this is a MINOR bump
-    # and not a patch: existing sessions do not survive the upgrade. If a
-    # future edit tidies this sentence away, the release stops warning about
-    # the one thing an operator needs to know before deploying it.
-    assert "signs every existing session out once" in body
-    assert "### Changed" in body
+    # The three literal labels. A future edit that re-cases them in the prose
+    # would describe the bug rather than the fix.
+    assert "`all`, `rsync` and `zfs`" in body
+    # The root cause, which is the non-obvious part: the values were always
+    # lower case and CSS was re-casing them at paint time. Lose this and the
+    # entry reads as if the strings themselves were wrong.
+    assert "capitalize" in body
+    assert "### Fixed" in body
 
 
 # --------------------------------------------------------------------------
