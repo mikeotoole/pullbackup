@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/seed-demo.py` stands up a throwaway local instance seeded with
+  entirely fabricated data, for README and marketing screenshots. It builds the
+  image from the checkout, runs it on `127.0.0.1:18080` against a scratch
+  directory, creates two invented sources and eleven tasks through the API,
+  writes ~40 runs and their logs directly to SQLite, and prints the URL and
+  credentials. Safe to
+  re-run: it tears the previous instance down first and seeds from a fixed RNG
+  seed, so two runs produce the same data. `docs/demo.md` explains it.
+
+  Because the credentials are printed on stdout, the publish spec names the
+  loopback address explicitly rather than using Docker's `-p 18080:8000`
+  shorthand, which binds `0.0.0.0` *and* the IPv6 wildcard and would expose
+  those credentials to the LAN. `--verify` re-proves the binding against the
+  live container with `docker port` and `docker inspect`, and
+  `tests/test_demo_publish_binding.py` fails if the host IP is ever dropped.
+
+  The seeded tasks carry real cron schedules, so the scheduler does try to fire
+  them; four independent layers stop that becoming an outbound connection —
+  blackholed DNS, hosts that resolve nowhere, a non-terminal run per source that
+  makes every admission fail closed, and an `ssh_key_path` that does not exist.
+  `--verify` checks all four against the running container, plus that a
+  browser-shaped `401` still carries no `WWW-Authenticate`.
+
 ### Changed
 
 - Every emoji used as a UI affordance is now a custom SVG icon drawn for this
