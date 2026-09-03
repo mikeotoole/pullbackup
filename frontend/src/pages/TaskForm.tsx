@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import cronstrue from "cronstrue";
 import { api, type Task } from "../lib/api";
+import { WarningIcon } from "../components/icons";
 
 function describeCron(cron: string | undefined): { text: string; ok: boolean } {
   if (!cron) return { text: "", ok: false };
@@ -229,9 +230,16 @@ export function TaskForm() {
               onChange={v => set("syncoid_force_full", v)}
             />
             {form.syncoid_force_full && (
-              <p style={{ color: "#f59e0b", fontSize: "0.8rem", margin: "0.25rem 0 0.5rem 1.6rem" }}>
-                ⚠ Destroys the existing target dataset and does a full initial send. Use when the
-                replica is out of sync (“no snapshots matching”). Turn back off once it’s tracking.
+              <p style={{ color: "#f59e0b", fontSize: "0.8rem", margin: "0.25rem 0 0.5rem 1.6rem", display: "flex", alignItems: "flex-start", gap: "0.4em" }}>
+                {/* Inline with the sentence, not a control: no 44px target. The
+                    icon is sized in em so it tracks the 0.8rem text, and nudged
+                    down a hair so its optical centre sits on the first line's
+                    x-height rather than riding above the cap line. */}
+                <WarningIcon style={{ width: "1.15em", height: "1.15em", flexShrink: 0, marginTop: "0.08em" }} />
+                <span>
+                  Destroys the existing target dataset and does a full initial send. Use when the
+                  replica is out of sync (“no snapshots matching”). Turn back off once it’s tracking.
+                </span>
               </p>
             )}
             <Field label="compression (--compress)">

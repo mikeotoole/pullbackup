@@ -5,6 +5,7 @@ import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { StatusPill } from "../components/StatusPill";
+import { ArrowLeftIcon } from "../components/icons";
 
 export function RunDetail() {
   const { id } = useParams();
@@ -26,7 +27,7 @@ export function RunDetail() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4">
-        <Link to="/tasks" className="text-muted hover:text-white">← Tasks</Link>
+        <Link to="/tasks" className="text-muted hover:text-white inline-flex items-center gap-1.5"><ArrowLeftIcon className="w-4 h-4" />tasks</Link>
         <h1 className="text-xl font-semibold">Run #{runId}</h1>
         <StatusPill state={run?.state} />
       </div>

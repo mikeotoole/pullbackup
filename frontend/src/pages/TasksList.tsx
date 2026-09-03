@@ -7,6 +7,7 @@ import { api, type Task } from "../lib/api";
 import { lastRunTime, relTime } from "../lib/relativeTime";
 import { StatusPill } from "../components/StatusPill";
 import { Toggle } from "../components/Toggle";
+import { BellIcon, CloneIcon, HistoryIcon, PencilIcon, PlayIcon, TrashIcon } from "../components/icons";
 
 // syncoid tasks are surfaced as "zfs" in the UI
 const typeLabel = (t: Task) => (t.task_type === "syncoid" ? "zfs" : "rsync");
@@ -104,14 +105,14 @@ export function TasksList() {
                   ) : pill}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
-                  <Link to={`/tasks/${t.id}/runs`} title="run history" className="inline-block w-7 text-center text-muted hover:text-white">🕘</Link>
-                  <Link to={`/tasks/${t.id}/edit`} title="edit" className="inline-block w-7 text-center text-muted hover:text-white">✎</Link>
-                  <Link to="/tasks/new" state={{ clone: t }} title="clone (opens an unsaved copy)" className="inline-block w-7 text-center text-muted hover:text-white">⧉</Link>
+                  <Link to={`/tasks/${t.id}/runs`} title="run history" aria-label="Run history" className="inline-block w-7 text-center text-muted hover:text-white"><HistoryIcon className="inline-block w-4 h-4 align-middle" /></Link>
+                  <Link to={`/tasks/${t.id}/edit`} title="edit" aria-label="Edit task" className="inline-block w-7 text-center text-muted hover:text-white"><PencilIcon className="inline-block w-4 h-4 align-middle" /></Link>
+                  <Link to="/tasks/new" state={{ clone: t }} title="clone (opens an unsaved copy)" aria-label="Clone task" className="inline-block w-7 text-center text-muted hover:text-white"><CloneIcon className="inline-block w-4 h-4 align-middle" /></Link>
                   {t.kuma_monitor_id && sys?.kuma_url && (
-                    <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" className="inline-block w-7 text-center text-muted hover:text-white">🔔</a>
+                    <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="inline-block w-7 text-center text-muted hover:text-white"><BellIcon className="inline-block w-4 h-4 align-middle" /></a>
                   )}
-                  <button title="run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white">▶</button>
-                  <button title="delete" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-danger">🗑</button>
+                  <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white"><PlayIcon className="inline-block w-4 h-4 align-middle" /></button>
+                  <button title="delete" aria-label="Delete task" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-danger"><TrashIcon className="inline-block w-4 h-4 align-middle" /></button>
                 </td>
               </tr>
             )})}
@@ -169,14 +170,14 @@ export function TasksList() {
                 <span>{t.enabled ? "enabled" : "disabled"}</span>
               </div>
               <div className="flex flex-wrap items-center justify-end">
-                <Link to={`/tasks/${t.id}/runs`} title="run history" aria-label="Run history" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white">🕘</Link>
-                <Link to={`/tasks/${t.id}/edit`} title="edit" aria-label="Edit task" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white">✎</Link>
-                <Link to="/tasks/new" state={{ clone: t }} title="clone (opens an unsaved copy)" aria-label="Clone task" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white">⧉</Link>
+                <Link to={`/tasks/${t.id}/runs`} title="run history" aria-label="Run history" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><HistoryIcon className="w-5 h-5" /></Link>
+                <Link to={`/tasks/${t.id}/edit`} title="edit" aria-label="Edit task" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><PencilIcon className="w-5 h-5" /></Link>
+                <Link to="/tasks/new" state={{ clone: t }} title="clone (opens an unsaved copy)" aria-label="Clone task" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><CloneIcon className="w-5 h-5" /></Link>
                 {t.kuma_monitor_id && sys?.kuma_url && (
-                  <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white">🔔</a>
+                  <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><BellIcon className="w-5 h-5" /></a>
                 )}
-                <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white">▶</button>
-                <button title="delete" aria-label="Delete task" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger">🗑</button>
+                <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><PlayIcon className="w-5 h-5" /></button>
+                <button title="delete" aria-label="Delete task" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger"><TrashIcon className="w-5 h-5" /></button>
               </div>
             </div>
           </div>

@@ -120,15 +120,26 @@ describe("phone layout", () => {
     const desktop = src.slice(src.indexOf("text-right whitespace-nowrap"), src.indexOf("</tbody>"));
     const mobile = src.slice(src.indexOf("sm:hidden space-y-3"));
 
-    // Identify actions by their glyph, which is stable across both views.
-    const glyphs = (s) => new Set((s.match(/>([\u{1F300}-\u{1FAFF}\u{2190}-\u{2BFF}\u{FE0F}\u2714\u270E\u29C9])</gu) ?? []));
-
-    for (const glyph of ["\u{1F550}", "\u270E", "\u29C9", "\u25B6", "\u{1F5D1}"]) {
-      const inDesktop = desktop.includes(glyph);
-      const inMobile = mobile.includes(glyph);
+    // Identify actions by their aria-label. This USED to key off the emoji
+    // glyph, which was stable across both views right up until the glyphs were
+    // replaced by SVG components - at which point both sets became empty and
+    // the guard passed while proving nothing. An accessible name is the more
+    // durable identity anyway: it is what a screen-reader user navigates by,
+    // so a view missing one is a real defect whatever it renders.
+    for (const label of [
+      "Run history",
+      "Edit task",
+      "Clone task",
+      "Run now",
+      "Delete task",
+      "Uptime Kuma monitor",
+    ]) {
+      const needle = `aria-label="${label}"`;
+      const inDesktop = desktop.includes(needle);
+      const inMobile = mobile.includes(needle);
       expect(
-        inDesktop === inMobile,
-        `action "${glyph}" is in desktop=${inDesktop} but mobile=${inMobile}; ` +
+        inDesktop && inMobile,
+        `action "${label}" is in desktop=${inDesktop} but mobile=${inMobile}; ` +
         `both views must offer the same actions`,
       ).toBe(true);
     }

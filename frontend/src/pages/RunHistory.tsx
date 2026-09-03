@@ -4,6 +4,7 @@ import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { StatusPill } from "../components/StatusPill";
+import { ArrowLeftIcon, ExternalLinkIcon } from "../components/icons";
 
 function fmtTime(iso: string | null) {
   if (!iso) return "—";
@@ -45,7 +46,7 @@ export function RunHistory() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4">
-        <Link to="/tasks" className="text-muted hover:text-white">← tasks</Link>
+        <Link to="/tasks" className="text-muted hover:text-white inline-flex items-center gap-1.5"><ArrowLeftIcon className="w-4 h-4" />tasks</Link>
         <h1 className="text-xl font-semibold">run history{task ? ` — ${task.name}` : ""}</h1>
       </div>
       {!sorted.length && <div className="text-muted text-sm">no runs yet.</div>}
@@ -75,7 +76,7 @@ export function RunHistory() {
                   ) : null}
                 </td>
                 <td className="px-3 py-2 text-right whitespace-nowrap">
-                  <Link to={`/runs/${r.id}`} className="text-muted hover:text-white" title="view log">log ↗</Link>
+                  <Link to={`/runs/${r.id}`} className="text-muted hover:text-white inline-flex items-center gap-1" title="view log">log<ExternalLinkIcon className="w-3.5 h-3.5" /></Link>
                 </td>
               </tr>
             ))}
@@ -95,7 +96,7 @@ export function RunHistory() {
                   <StatusPill state={r.state} />
                   <span className="font-mono text-xs text-muted">#{r.id}</span>
                 </div>
-                <Link to={`/runs/${r.id}`} className="text-muted hover:text-white text-xs min-h-[44px] flex items-center px-1" title="view log">log ↗</Link>
+                <Link to={`/runs/${r.id}`} className="text-muted hover:text-white text-xs min-h-[44px] flex items-center gap-1 px-1" title="view log">log<ExternalLinkIcon className="w-3.5 h-3.5" /></Link>
               </div>
               <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                 <div className="min-w-0">

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Source } from "../lib/api";
+import { PencilIcon, TrashIcon } from "../components/icons";
 
 const empty: Partial<Source> = { name: "", user: "root", host: "", port: 22, ssh_key_path: "/data/ssh/id_ed25519", description: "" };
 
@@ -58,8 +59,8 @@ export function Sources() {
                 <td className="px-4 py-3 font-mono text-xs text-muted">{s.ssh_key_path}</td>
                 <td className="px-4 py-3 text-muted">{s.task_count}</td>
                 <td className="px-4 py-3 text-right space-x-2">
-                  <button className="text-muted hover:text-white" onClick={() => setEditing(s)}>✎</button>
-                  <button className="text-muted hover:text-danger" disabled={s.task_count > 0} onClick={() => confirm(`Delete source ${s.name}?`) && del.mutate(s.id)}>🗑</button>
+                  <button aria-label="Edit source" title="edit source" className="text-muted hover:text-white" onClick={() => setEditing(s)}><PencilIcon className="inline-block w-4 h-4 align-middle" /></button>
+                  <button aria-label="Delete source" title={s.task_count > 0 ? "in use by a task" : "delete source"} className="text-muted hover:text-danger disabled:opacity-40" disabled={s.task_count > 0} onClick={() => confirm(`Delete source ${s.name}?`) && del.mutate(s.id)}><TrashIcon className="inline-block w-4 h-4 align-middle" /></button>
                 </td>
               </tr>
             ))}
@@ -82,14 +83,16 @@ export function Sources() {
                 <div className="font-mono text-xs text-muted break-all">{s.user}@{s.host}:{s.port}</div>
               </div>
               <div className="flex items-center shrink-0">
-                <button aria-label="Edit source" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white" onClick={() => setEditing(s)}>✎</button>
+                <button aria-label="Edit source" title="edit source" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white" onClick={() => setEditing(s)}><PencilIcon className="w-5 h-5" /></button>
                 <button
                   aria-label="Delete source"
                   className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger disabled:opacity-40"
                   disabled={s.task_count > 0}
                   title={s.task_count > 0 ? "in use by a task" : "delete source"}
                   onClick={() => confirm(`Delete source ${s.name}?`) && del.mutate(s.id)}
-                >🗑</button>
+                >
+                  <TrashIcon className="w-5 h-5" />
+                </button>
               </div>
             </div>
             <div className="font-mono text-xs text-muted break-all">{s.ssh_key_path}</div>

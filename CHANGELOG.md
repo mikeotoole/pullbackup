@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Every emoji used as a UI affordance is now a custom SVG icon drawn for this
+  project (`frontend/src/components/icons/`): edit, delete, run history, clone,
+  run now, Uptime Kuma monitor, back, external link and warning. No icon-library
+  dependency was added.
+
+  This is more than cosmetic. Emoji render as full-colour platform glyphs — a
+  different picture on macOS, Windows, Android and Linux, usually misaligned
+  with the text beside them — and they ignore `currentColor`. The delete button
+  has carried `hover:text-danger` for some time and it did nothing, because
+  there is no stroke on a 🗑 for the cascade to recolour. The replacements are
+  stroke-only and inherit their colour, so hover and danger states work.
+
+  The controls' accessible names are unchanged and now applied consistently
+  across both layouts; each icon is `aria-hidden`/`focusable="false"` so screen
+  readers announce the control once, and the 44px phone tap targets are intact.
 
 ### Fixed
 
