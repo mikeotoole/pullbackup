@@ -7,7 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.13.1] - 2026-09-03
 
 ### Fixed
 
@@ -23,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   container healthcheck and a browser navigating directly at `/openapi.json`
   still receive `WWW-Authenticate: Basic`, and an unauthenticated `/api/*`
   request is still refused with `401` — never a 200, never a redirect.
+
+## [0.13.1] - 2026-09-03
+
+### Fixed
 
 - The task-list type filter chips now read `all`, `rsync` and `zfs` instead of
   `All`, `Rsync` and `Zfs`. The underlying values were always lower case; a
