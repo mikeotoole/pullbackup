@@ -31,13 +31,15 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = REPOSITORY_ROOT / "CHANGELOG.md"
 
-RELEASE_VERSION = "0.13.1"
+RELEASE_VERSION = "0.14.0"
 
 # sha256 of the stripped [Unreleased] body at the release base commit
-# aea4d36c1cc3... -- the task-type filter chips no longer being re-cased by a
-# Tailwind `capitalize` utility (Fixed). This is the content 0.13.1 releases.
+# d05ca934d931... -- the seeded local demo instance (Added); the custom SVG
+# icon set, the D4 layers app icon and the matching in-app BrandMark (Changed);
+# and the suppressed native Basic-auth dialog (Fixed). This is the content
+# 0.14.0 releases.
 UNRELEASED_BODY_AT_BASE_SHA256 = (
-    "e9c6121170df83002c82533bfb21ff07e8c8016e50d3f142ba2d1ad97b83dd66"
+    "175c7067679217133bf7b422007ea9c9ed658b2ec3cd6feb7f05288e7a56a4d9"
 )
 
 HEADING = re.compile(r"^## \[([^\]]+)\](?: - (\d{4}-\d{2}-\d{2}))?\s*$", re.M)
@@ -85,19 +87,29 @@ def test_the_release_section_still_names_what_shipped():
     These are the substance of 0.13.0, so they are named explicitly: a future
     rewrite that drops one gets a readable failure rather than a hex mismatch.
 
-    Each release retargets this test to its own contents. 0.13.0 named the
-    session-signing swap; 0.13.1 ships the filter-chip casing fix, so it names
-    that instead. The digest above still pins the body byte-for-byte -- this is
+    Each release retargets this test to its own contents. 0.13.1 named the
+    filter-chip casing fix; 0.14.0 ships three user-visible things, so it names
+    all three. The digest above still pins the body byte-for-byte -- this is
     the readable half of the same guard, not a second, weaker one.
     """
     body = _body(RELEASE_VERSION)
-    # The three literal labels. A future edit that re-cases them in the prose
-    # would describe the bug rather than the fix.
-    assert "`all`, `rsync` and `zfs`" in body
-    # The root cause, which is the non-obvious part: the values were always
-    # lower case and CSS was re-casing them at paint time. Lose this and the
-    # entry reads as if the strings themselves were wrong.
-    assert "capitalize" in body
+    # Added: the seeded demo instance. The loopback binding is the security
+    # property that made it publishable at all -- an entry that drops it would
+    # read as if `-p 18080:8000` had been acceptable.
+    assert "scripts/seed-demo.py" in body
+    assert "loopback" in body
+    # Changed: the icon work, both halves. The in-app mark is a separate
+    # sentence because shipping only the served asset would have split the
+    # brand in two, which is the non-obvious part.
+    assert "`frontend/src/components/icons/`" in body
+    assert "BrandMark" in body
+    # Fixed: the root cause, not the symptom. A browser pops its own dialog for
+    # WWW-Authenticate even on a same-origin fetch(); lose that and the entry
+    # reads as if the 401 itself were wrong.
+    assert "WWW-Authenticate" in body
+    assert "Sec-Fetch-Mode" in body
+    assert "### Added" in body
+    assert "### Changed" in body
     assert "### Fixed" in body
 
 

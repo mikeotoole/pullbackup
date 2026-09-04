@@ -211,7 +211,7 @@ def test_the_declared_version_is_the_deployed_one():
     disagreement is exactly the drift this guard exists to end -- three sources
     once said 0.10.0, 0.5.1 and 0.11.0 at the same time.
     """
-    assert _declared_version() == "0.13.1"
+    assert _declared_version() == "0.14.0"
 
 
 def test_the_package_does_not_hardcode_a_version_literal():

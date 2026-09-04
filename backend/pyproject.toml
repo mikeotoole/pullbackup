@@ -1,6 +1,6 @@
 [project]
 name = "pullbackup"
-version = "0.13.1"
+version = "0.14.0"
 description = "Pull-only rsync task manager"
 license = "AGPL-3.0-or-later"
 requires-python = ">=3.13"
