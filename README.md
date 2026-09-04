@@ -4,6 +4,41 @@ Pull-only rsync task manager. Web UI like TrueNAS's "Rsync Tasks" but inverted: 
 
 **Stack:** FastAPI (Python 3.13) · SQLite · APScheduler · React 18 + Vite + Tailwind + shadcn/ui
 
+## Screenshots
+
+Every host, path, schedule and byte count below is fabricated. They come from a
+throwaway local instance produced by [`scripts/seed-demo.py`](scripts/seed-demo.py)
+— see [`docs/demo.md`](docs/demo.md) — never from a real deployment.
+
+[![Task list](docs/screenshots/tasks-desktop.png)](docs/screenshots/tasks-desktop.png)
+
+The task list, filtered by engine. Each row carries its schedule, last and next
+run, and the outcome of the most recent run.
+
+[![Run log](docs/screenshots/run-log-desktop.png)](docs/screenshots/run-log-desktop.png)
+
+A finished run: exit code, byte and file counts, and the complete `rsync` output
+including the `--stats2` summary. Logs stream live while a run is in progress.
+
+<table>
+<tr>
+<td width="50%"><a href="docs/screenshots/run-history-desktop.png"><img src="docs/screenshots/run-history-desktop.png" alt="Run history"></a></td>
+<td width="50%"><a href="docs/screenshots/task-form-desktop.png"><img src="docs/screenshots/task-form-desktop.png" alt="Task form"></a></td>
+</tr>
+<tr>
+<td>Per-task run history — durations, throughput and failures.</td>
+<td>The task form, with the usual rsync knobs.</td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/sources-desktop.png"><img src="docs/screenshots/sources-desktop.png" alt="Sources"></a></td>
+<td align="center"><a href="docs/screenshots/tasks-mobile.png"><img src="docs/screenshots/tasks-mobile.png" alt="Mobile task list" width="300"></a></td>
+</tr>
+<tr>
+<td>Sources — defined once, reused across tasks.</td>
+<td>The same list on a phone.</td>
+</tr>
+</table>
+
 ## Concepts
 
 - **Source** — a remote host you pull from (name, `user@host:port`, SSH key). Defined once, reused across tasks.

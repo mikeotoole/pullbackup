@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+
+### Added
+
+- The README now shows the UI. Six screenshots — the task list, a finished run
+  with its full `rsync` output, per-task run history, the task form, sources,
+  and the task list on a phone — all taken from the throwaway instance
+  `scripts/seed-demo.py` produces, so every host, path, schedule and byte count
+  in them is invented. `tests/test_readme_screenshots.py` fails if a referenced
+  image is missing, if a committed screenshot is never shown, or if the README
+  stops saying where the data came from; the last of those is the only thing
+  keeping a hurried maintainer from publishing a picture of their own instance.
+
 ## [0.14.0] - 2026-09-03
 
 ### Added
