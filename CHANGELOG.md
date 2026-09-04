@@ -15,19 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the first reply to a report should not have to be "please remove your
   network layout from this".
 
-### Removed
-
-- `docs/research/product-name.md` and its guard test. The note weighed a rename
-  away from "Pullback" because of a namespace collision with an existing
-  rsync-based project of nearly the same name; that decision was made and the
-  deliberation belongs in private notes rather than shipped alongside the
-  product it argues about.
-
-
-
-
-### Added
-
 - The README now shows the UI. Six screenshots — the task list, a finished run
   with its full `rsync` output, per-task run history, the task form, sources,
   and the task list on a phone — all taken from the throwaway instance
@@ -36,6 +23,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image is missing, if a committed screenshot is never shown, or if the README
   stops saying where the data came from; the last of those is the only thing
   keeping a hurried maintainer from publishing a picture of their own instance.
+
+- Build instructions. No image is published yet, so the README's Deployment
+  section now says to build one from a checkout, and
+  `docker/compose.example.yaml` builds from the repository root instead of
+  pulling a placeholder `ghcr.io/OWNER` image that never existed.
+
+### Changed
+
+- Run logs open with `# pullbackup run N (type)` rather than the pre-rename
+  `# pullback run`; the seeded demo instance writes the same header.
+- The frontend package is `pullbackup-frontend` in `package.json` and the lock
+  file, matching the product name everywhere else.
+
+### Removed
+
+- `docs/research/product-name.md` and its guard test. The note weighed a rename
+  away from "Pullback" because of a namespace collision with an existing
+  rsync-based project of nearly the same name; that decision was made and the
+  deliberation belongs in private notes rather than shipped alongside the
+  product it argues about.
+
+- `frontend/tsconfig.tsbuildinfo` is no longer tracked. It is TypeScript's
+  incremental-build cache and changed on every build; `*.tsbuildinfo` is now
+  ignored.
 
 ## [0.14.0] - 2026-09-03
 

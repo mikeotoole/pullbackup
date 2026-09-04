@@ -58,9 +58,26 @@ including the `--stats2` summary. Logs stream live while a run is in progress.
 
 ## Deployment
 
-Built as a single container image and deployed as a Docker Compose stack. Bind-mount the destination roots you want exposed; Pullbackup's filesystem browser is allowlisted to those roots. All UI and API routes except `/api/system/health` require authentication: a
-signed session cookie obtained from the login page, or HTTP Basic credentials
-for scripted access.
+Pullbackup ships as a single container image and is deployed as a Docker
+Compose stack. No image is published yet, so build it from a checkout. The
+`Dockerfile` at the repository root is a multi-stage build that compiles the
+frontend and packages the backend with `rsync`, `ssh` and `syncoid`:
+
+```bash
+git clone https://github.com/mikeotoole/pullbackup.git
+cd pullbackup
+docker build -t pullbackup:local .
+```
+
+[`docker/compose.example.yaml`](docker/compose.example.yaml) is a starting
+point. It builds the same image from the repository root, so from the `docker/`
+directory `docker compose up -d --build` is enough once a `.env` beside it
+supplies the values from [`.env.example`](.env.example).
+
+Bind-mount the destination roots you want exposed; Pullbackup's filesystem
+browser is allowlisted to those roots. All UI and API routes except
+`/api/system/health` require authentication: a signed session cookie obtained
+from the login page, or HTTP Basic credentials for scripted access.
 
 ```
 volumes:

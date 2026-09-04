@@ -1,7 +1,12 @@
 # Example Pullbackup deployment.
 #
-# Copy this file, adjust the volumes and destination roots for your host, and
-# supply the environment values from a .env beside it (see ../.env.example).
+# No image is published yet, so this file builds one from the repository root
+# (`build.context: ..`). Adjust the volumes and destination roots for your
+# host, supply the environment values from a .env beside it (see
+# ../.env.example), and run `docker compose up -d --build` from this directory.
+# If you copy the file elsewhere, either fix `build.context` to point at your
+# checkout or build the image first (`docker build -t pullbackup:local .` at
+# the repository root) and delete the `build` block.
 #
 # Nothing here is required — Pullbackup is a single container plus one data
 # volume. The extras below (ZFS device access, Traefik labels) are only needed
@@ -9,7 +14,9 @@
 
 services:
   pullbackup:
-    image: ghcr.io/OWNER/pullbackup:latest
+    build:
+      context: ..
+    image: pullbackup:local
     container_name: pullbackup
     restart: unless-stopped
     # Modest limits: the container orchestrates rsync/syncoid, it does not do

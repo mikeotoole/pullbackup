@@ -435,7 +435,7 @@ async def _execute_run(run_id: int) -> int:
             # directory creation that used to be a separate pathname `mkdir`.
             with pinned_command(task, source) as (args, pass_fds):
                 with open(log_path, "wb") as logf:
-                    logf.write(f"# pullback run {run_id} ({task.task_type})\n# args: {' '.join(args)}\n\n".encode())
+                    logf.write(f"# pullbackup run {run_id} ({task.task_type})\n# args: {' '.join(args)}\n\n".encode())
                     logf.flush()
                     proc = await asyncio.create_subprocess_exec(
                         *args,
