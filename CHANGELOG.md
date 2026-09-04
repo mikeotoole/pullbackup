@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), GitHub issue templates and a
+  pull-request template. The bug template asks for a version and redacted logs
+  up front, because a backup tool's logs are full of real hostnames and paths
+  and the first reply to a report should not have to be "please remove your
+  network layout from this".
+
+### Removed
+
+- `docs/research/product-name.md` and its guard test. The note weighed a rename
+  away from "Pullback" because of a namespace collision with an existing
+  rsync-based project of nearly the same name; that decision was made and the
+  deliberation belongs in private notes rather than shipped alongside the
+  product it argues about.
+
+
 
 
 ### Added

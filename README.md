@@ -1,5 +1,11 @@
 # Pullbackup
 
+> **This repository is a read-only mirror.** Development happens on a private
+> Gitea instance; commits are pushed here automatically. Pull requests opened on
+> GitHub cannot be merged and may go unnoticed — please
+> [open an issue](../../issues) instead, which is read. See
+> [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Pull-only rsync task manager. Web UI like TrueNAS's "Rsync Tasks" but inverted: the puller holds all credentials, sources never need anything from us.
 
 **Stack:** FastAPI (Python 3.13) · SQLite · APScheduler · React 18 + Vite + Tailwind + shadcn/ui

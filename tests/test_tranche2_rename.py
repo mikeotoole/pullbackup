@@ -522,7 +522,6 @@ PRIVATE_ALLOWED = {
     ".gitea/workflows/tests.yml",
     "tests/test_naming_tranche1.py",
     "tests/test_tranche2_rename.py",
-    "docs/research/product-name.md",
 }
 
 
