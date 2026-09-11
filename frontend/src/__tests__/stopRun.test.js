@@ -247,6 +247,28 @@ describe("stopping a running run", () => {
     expect(String(alerted.mock.calls[0][0])).toContain(detail);
   });
 
+  it("tells the operator when the stop did not actually stop the run", async () => {
+    // The 504 path. "already finished" and "has not stopped" are opposite
+    // facts about the operator's data, and collapsing them into a generic
+    // failure would let someone walk away from a transfer still copying bytes.
+    const detail =
+      "504 stop requested, but run 42 has not stopped (still running)";
+    vi.spyOn(api, "cancelRun").mockRejectedValue(new Error(detail));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = tasksList([task({ last_run_state: "running" })]);
+
+    await act(async () => {
+      byName(host, "Stop run")[0].click();
+    });
+    await settle();
+
+    expect(alerted).toHaveBeenCalled();
+    const said = String(alerted.mock.calls[0][0]);
+    expect(said).toContain("has not stopped");
+    expect(said).not.toContain("already finished");
+  });
+
   it("still shows Stop after a refused stop, so the operator can retry", async () => {
     vi.spyOn(api, "cancelRun").mockRejectedValue(new Error("boom"));
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -338,5 +360,20 @@ describe("the cancel client", () => {
     );
 
     await expect(api.cancelRun(42)).rejects.toThrow(/already finished/);
+  });
+
+  it("surfaces a stop that did not stop the run as its own answer", async () => {
+    // The backend answers 504 when it signalled the run but the run is still
+    // active. That is neither success nor "already finished": the transfer is
+    // still copying bytes, and an operator told otherwise would walk away.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        "stop requested, but run 42 has not stopped (still running)",
+        { status: 504 },
+      ),
+    );
+
+    await expect(api.cancelRun(42)).rejects.toThrow(/has not stopped/);
+    await expect(api.cancelRun(42)).rejects.not.toThrow(/already finished/);
   });
 });

@@ -24,7 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run. A pending run that has not started, a run left behind by a previous
   process, and an unknown id each get an honest refusal with the row untouched,
   and a run that completes while the stop request is in flight reports
-  `already finished (success)` rather than claiming it was cancelled.
+  `already finished (success)` rather than claiming it was cancelled. A stop
+  that was sent but has not taken effect answers 504 "has not stopped (still
+  running)" — not a terminal outcome, because the transfer is still copying
+  bytes and an operator told otherwise would walk away from it.
+
+  A cancelled run is announced as `cancelled`, not `FAILED`, and pushes nothing
+  to Uptime Kuma: a deliberate stop is not a broken backup, and `up` would claim
+  a transfer that never happened. Genuine failures and successes are unchanged.
 
 - Tasks can now be edited while a run is active, for the fields that cannot
   reach a transfer already executing: name, description, cron, enabled, and the

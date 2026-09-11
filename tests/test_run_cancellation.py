@@ -948,3 +948,337 @@ async def test_cancelling_leaves_the_task_editable_again(
             task.id, task_input(task, delete=True), session
         )
     assert updated.delete is True
+
+
+# --------------------------------------------------------------------------
+# 5. what a cancellation is allowed to claim it achieved
+# --------------------------------------------------------------------------
+#
+# `cancel_run` decides its answer by re-reading the row AFTER the execution
+# settles, rather than by asserting what the request intended. The two tests
+# below pin the two branches of that re-read that a real operator can reach and
+# that nothing else exercises:
+#
+#   * the execution did NOT settle within the timeout, so the run is still
+#     running — the answer must say so rather than calling a non-stop terminal;
+#   * the execution settled because the run finished NATURALLY while the request
+#     was awaiting it — the honest answer is that real outcome.
+#
+# Both drive `cancel_run` at its own seam with a synthetic owner, because the
+# whole point is to control when (and whether) the execution settles. A real
+# blocking run cannot make either branch deterministic: the timeout branch would
+# need a 30-second wall clock, and the natural-completion branch is a genuine
+# race that the cancel usually wins.
+
+
+async def _settles_too_slowly(unwind_seconds):
+    """An execution whose unwinding outlasts the cancellation's patience.
+
+    Bounded deliberately: it re-raises on a second cancellation, so a test's
+    teardown can always reap it. A stub that swallowed cancellation forever
+    would turn any assertion failure in these tests into a hang with no
+    traceback.
+    """
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        await asyncio.sleep(unwind_seconds)
+        raise
+
+
+def _running_row(engine, task_id):
+    """A real run row in `running`, without a subprocess behind it."""
+    with Session(engine) as session:
+        run = Run(task_id=task_id, state=RunState.running, log_filename="probe.log")
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        return run.id
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_that_does_not_stop_the_run_says_so(
+    sqlite_engine, monkeypatch
+):
+    """A stop that did not stop anything must not be reported as terminal.
+
+    When the execution misses the settle timeout the row is still `running`.
+    Answering `already_finished` there produces the self-contradictory "already
+    finished (running)" and tells an operator the transfer stopped when it is
+    still copying bytes.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    run_id = _running_row(sqlite_engine, task.id)
+    monkeypatch.setattr(runner, "CANCEL_SETTLE_TIMEOUT_SECONDS", 0.2)
+
+    execution = asyncio.create_task(_settles_too_slowly(30))
+    await asyncio.sleep(0)
+    runner._run_owners[run_id] = runner.RunOwner(
+        execution=execution, settled=asyncio.Event()
+    )
+
+    try:
+        result = await runner.cancel_run(run_id)
+    finally:
+        execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+        runner._run_owners.pop(run_id, None)
+
+    assert result.outcome == runner.CancelOutcome.still_running
+    assert result.state == RunState.running
+    with Session(sqlite_engine) as session:
+        assert session.get(Run, run_id).state == RunState.running
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_completes_while_the_cancel_awaits_it_reports_success(
+    sqlite_engine, monkeypatch
+):
+    """The true mid-await completion race.
+
+    The existing race test drains the execution *before* calling `cancel_run`,
+    so it exits at the early terminal-state return and never reaches the
+    post-settle re-read. This one is still `running` at the ownership check and
+    reaches `success` while the request is awaiting `settled` — which is the
+    only path that proves the re-read, rather than the request's intention, is
+    what produces the answer.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    run_id = _running_row(sqlite_engine, task.id)
+    settled = asyncio.Event()
+
+    async def finishes_naturally():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # The subprocess had already exited 0; this execution was past the
+            # point of interruption and commits its own real outcome.
+            with Session(sqlite_engine) as session:
+                run = session.get(Run, run_id)
+                run.state = RunState.success
+                run.exit_code = 0
+                session.add(run)
+                session.commit()
+            raise
+        finally:
+            runner._run_owners.pop(run_id, None)
+            settled.set()
+
+    execution = asyncio.create_task(finishes_naturally())
+    await asyncio.sleep(0)
+    runner._run_owners[run_id] = runner.RunOwner(execution=execution, settled=settled)
+
+    try:
+        result = await runner.cancel_run(run_id)
+    finally:
+        await asyncio.gather(execution, return_exceptions=True)
+
+    assert result.outcome == runner.CancelOutcome.already_finished
+    assert result.state == RunState.success
+    with Session(sqlite_engine) as session:
+        assert session.get(Run, run_id).state == RunState.success
+
+
+@pytest.mark.asyncio
+async def test_the_cancel_endpoint_does_not_report_a_non_stop_as_a_stop(
+    sqlite_engine, monkeypatch
+):
+    """The HTTP answer for "asked to stop, has not stopped" is its own code.
+
+    Not 200 (nothing stopped) and not "already finished" (it has not finished).
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    run_id = _running_row(sqlite_engine, task.id)
+    monkeypatch.setattr(runner, "CANCEL_SETTLE_TIMEOUT_SECONDS", 0.2)
+
+    execution = asyncio.create_task(_settles_too_slowly(30))
+    await asyncio.sleep(0)
+    runner._run_owners[run_id] = runner.RunOwner(
+        execution=execution, settled=asyncio.Event()
+    )
+
+    try:
+        with Session(sqlite_engine) as session:
+            with pytest.raises(HTTPException) as raised:
+                await runs_api.cancel_run(run_id, session)
+    finally:
+        execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+        runner._run_owners.pop(run_id, None)
+
+    assert raised.value.status_code == 504
+    assert "has not stopped" in raised.value.detail
+    assert "running" in raised.value.detail
+    assert "already finished" not in raised.value.detail
+
+
+# --------------------------------------------------------------------------
+# 6. what the notification plane says about a cancelled run
+# --------------------------------------------------------------------------
+#
+# `cancelled` exists precisely so a deliberate stop is not filed as a broken
+# transfer. That distinction is worth nothing if the notification plane still
+# computes `ok = state == success` and drops everything else into the failure
+# branch: the operator gets a Matrix message saying the task FAILED and Uptime
+# Kuma is pushed `down`, which is the monitoring stack being told the backup is
+# broken when a human deliberately stopped it.
+
+
+@pytest.fixture
+def captured_notifications(monkeypatch, sqlite_engine):
+    """Record what `dispatch` would send, without any network."""
+    from pullbackup.services import notify
+
+    matrix, kuma = [], []
+
+    async def record_matrix(body):
+        matrix.append(body)
+
+    async def record_kuma(token, status, msg=""):
+        kuma.append((token, status, msg))
+
+    monkeypatch.setattr(notify, "engine", sqlite_engine)
+    monkeypatch.setattr(notify, "_matrix_send", record_matrix)
+    monkeypatch.setattr(notify, "_kuma_push", record_kuma)
+    return notify, matrix, kuma
+
+
+def _notifying_task(engine, state, **overrides):
+    """A notifiable task plus one run in `state`, returning the run id."""
+    (task,) = create_source_tasks(engine, count=1)
+    with Session(engine) as session:
+        stored = session.get(Task, task.id)
+        stored.notify_matrix = True
+        stored.notify_matrix_on_success = True
+        stored.kuma_enabled = True
+        stored.kuma_push_token = "push-token"
+        for field, value in overrides.items():
+            setattr(stored, field, value)
+        session.add(stored)
+        run = Run(
+            task_id=task.id,
+            state=state,
+            exit_code=-1 if state is not RunState.success else 0,
+            log_filename="notify.log",
+        )
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        return run.id
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_is_not_announced_as_a_failure(
+    sqlite_engine, captured_notifications
+):
+    notify, matrix, _ = captured_notifications
+    run_id = _notifying_task(sqlite_engine, RunState.cancelled)
+
+    await notify.dispatch(run_id)
+
+    assert len(matrix) == 1
+    assert "FAILED" not in matrix[0]
+    assert "cancelled" in matrix[0]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_does_not_push_kuma_down(
+    sqlite_engine, captured_notifications
+):
+    """A deliberate stop is not a health signal in either direction.
+
+    `down` would report a broken backup; `up` would claim one that did not
+    happen. The honest move is to push nothing and leave the monitor's own
+    heartbeat window to decide.
+    """
+    notify, _, kuma = captured_notifications
+    run_id = _notifying_task(sqlite_engine, RunState.cancelled)
+
+    await notify.dispatch(run_id)
+
+    assert kuma == []
+
+
+@pytest.mark.asyncio
+async def test_a_genuinely_failed_run_still_reports_failure(
+    sqlite_engine, captured_notifications
+):
+    """The control. `cancelled` must be carved out without softening `failed`."""
+    notify, matrix, kuma = captured_notifications
+    run_id = _notifying_task(sqlite_engine, RunState.failed)
+
+    await notify.dispatch(run_id)
+
+    assert len(matrix) == 1
+    assert "FAILED" in matrix[0]
+    assert [status for _, status, _ in kuma] == ["down"]
+
+
+@pytest.mark.asyncio
+async def test_a_successful_run_still_reports_success(
+    sqlite_engine, captured_notifications
+):
+    """The other control, so the carve-out cannot swallow the success branch."""
+    notify, matrix, kuma = captured_notifications
+    run_id = _notifying_task(sqlite_engine, RunState.success)
+
+    await notify.dispatch(run_id)
+
+    assert len(matrix) == 1
+    assert "succeeded" in matrix[0]
+    assert [status for _, status, _ in kuma] == ["up"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_respects_the_matrix_opt_out(
+    sqlite_engine, captured_notifications
+):
+    """`notify_matrix = False` still means silence — the carve-out is about the
+    LABEL a notification carries, not about creating new ones."""
+    notify, matrix, kuma = captured_notifications
+    run_id = _notifying_task(sqlite_engine, RunState.cancelled, notify_matrix=False)
+
+    await notify.dispatch(run_id)
+
+    assert matrix == []
+    assert kuma == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_notifies_even_when_success_notices_are_off(
+    sqlite_engine, captured_notifications
+):
+    """`notify_matrix_on_success` suppresses SUCCESS noise, and a stop is not a
+    success.
+
+    Without this, the obvious carve-out — folding `cancelled` into `ok` so it
+    stops taking the FAILED branch — silently swallows the notice entirely for
+    every task that opted out of success notices, which is the default. The
+    operator who pressed Stop hears nothing.
+    """
+    notify, matrix, kuma = captured_notifications
+    run_id = _notifying_task(
+        sqlite_engine, RunState.cancelled, notify_matrix_on_success=False
+    )
+
+    await notify.dispatch(run_id)
+
+    assert len(matrix) == 1
+    assert "cancelled" in matrix[0]
+    assert kuma == []
+
+
+@pytest.mark.asyncio
+async def test_a_successful_run_still_honours_the_success_opt_out(
+    sqlite_engine, captured_notifications
+):
+    """The control for the test above: the opt-out must still bite on success."""
+    notify, matrix, kuma = captured_notifications
+    run_id = _notifying_task(
+        sqlite_engine, RunState.success, notify_matrix_on_success=False
+    )
+
+    await notify.dispatch(run_id)
+
+    assert matrix == []
+    assert [status for _, status, _ in kuma] == ["up"]

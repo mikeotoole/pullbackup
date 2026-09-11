@@ -86,6 +86,11 @@ class CancelOutcome(str, Enum):
         it. That is a pending row not yet started, or a row left by a previous
         process. Terminalizing it would be claiming an effect on something we
         cannot signal.
+    ``still_running``
+        This process owned the run and signalled it, but the execution had not
+        unwound by the time the request gave up waiting, so the row is STILL
+        active. A stop that has not stopped anything is not a terminal outcome
+        and must never be dressed up as one.
     ``not_found``
         No such run.
     """
@@ -93,6 +98,7 @@ class CancelOutcome(str, Enum):
     cancelled = "cancelled"
     already_finished = "already_finished"
     not_owned = "not_owned"
+    still_running = "still_running"
     not_found = "not_found"
 
 
@@ -647,7 +653,9 @@ async def cancel_run(run_id: int) -> CancelResult:
     The completion-vs-cancel race is resolved by reading the row AFTER the
     execution has settled rather than by asserting what the request intended. A
     run that finished normally while the request was in flight reports
-    ``already_finished`` with ``success`` — never ``cancelled``.
+    ``already_finished`` with ``success`` — never ``cancelled``. A run that is
+    still active after the wait reports ``still_running``: the request achieved
+    nothing terminal and says so.
     """
 
     def _state() -> Optional[RunState]:
@@ -677,6 +685,12 @@ async def cancel_run(run_id: int) -> CancelResult:
     settled_state = _state()
     if settled_state == RunState.cancelled:
         return CancelResult(outcome=CancelOutcome.cancelled, state=settled_state)
+    if settled_state in (RunState.pending, RunState.running):
+        # The signal was sent but the execution has not unwound, so the row is
+        # still active. Reporting this as `already_finished` would produce the
+        # self-contradictory "already finished (running)" and tell an operator
+        # the transfer stopped while it is still copying bytes.
+        return CancelResult(outcome=CancelOutcome.still_running, state=settled_state)
     return CancelResult(outcome=CancelOutcome.already_finished, state=settled_state)
 
 

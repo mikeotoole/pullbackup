@@ -50,6 +50,10 @@ async def cancel_run(run_id: int, session: Session = Depends(get_session)):
         The run was already terminal, including the race where it completed
         while the request was in flight. The state named is the one it really
         reached, so a run that succeeded is never reported as cancelled.
+    ``504 ... has not stopped``
+        The process group was signalled but the run is still active. Nothing
+        terminal happened, and saying otherwise would tell an operator the
+        transfer stopped while it is still copying bytes.
     ``200``
         The process group was terminated and the run is ``cancelled``.
     """
@@ -60,6 +64,12 @@ async def cancel_run(run_id: int, session: Session = Depends(get_session)):
         raise HTTPException(
             409,
             f"run {run_id} is not owned by this process and cannot be cancelled",
+        )
+    if result.outcome == CancelOutcome.still_running:
+        state = result.state.value if result.state else "unknown"
+        raise HTTPException(
+            504,
+            f"stop requested, but run {run_id} has not stopped (still {state})",
         )
     if result.outcome == CancelOutcome.already_finished:
         state = result.state.value if result.state else "unknown"
