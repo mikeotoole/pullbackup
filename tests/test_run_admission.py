@@ -40,6 +40,10 @@ def sqlite_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_source_locks", {})
     monkeypatch.setattr(runner, "_admission_lock", asyncio.Lock())
     monkeypatch.setattr(runner, "_execution_tasks", set())
+    # Per-run cancellation ownership. Reset with the rest of the runner's
+    # process-global state so one test's execution can never be visible — or
+    # cancellable — from another.
+    monkeypatch.setattr(runner, "_run_owners", {})
     runner.settings.log_dir.mkdir()
     return engine
 

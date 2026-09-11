@@ -135,6 +135,55 @@ def _has_active_run(session: Session, task_id: int) -> bool:
     ).first() is not None
 
 
+# Fields whose value cannot reach a run that is already in flight.
+#
+# The runner loads its Task/Source snapshot inside `_execute_run` and builds the
+# argv from it BEFORE spawning the subprocess, so nothing written to the row
+# afterwards changes the command that is executing. That makes the question
+# "which fields are safe to edit mid-run?" one of *semantics*, not timing:
+#
+#   * `name` and `description` are labels.
+#   * `cron` and `enabled` decide FUTURE scheduling only — `scheduler.upsert_job`
+#     re-registers the job and never touches a running execution.
+#   * the notification flags are read by `notify.dispatch` after the run is
+#     terminal, so editing one mid-run simply chooses how THIS run is reported,
+#     which is the operator's call to make.
+#   * `kuma_enabled` creates/removes a monitor; again a reporting decision.
+#
+# Everything else either shapes the command (paths, task type, rsync/syncoid
+# flags and arguments, bandwidth, pruning) or decides whose data is being copied
+# (`source_id`). Those stay locked while a run is active, because letting the
+# stored row disagree with the transfer in flight is how a history stops
+# describing what actually happened.
+#
+# tests/test_run_cancellation.py asserts this set plus its complement covers
+# every TaskFields field, so a field added later cannot silently default into
+# whichever behaviour the code happens to give it.
+ACTIVE_RUN_SAFE_FIELDS = frozenset({
+    "name",
+    "description",
+    "cron",
+    "enabled",
+    "notify_matrix",
+    "notify_matrix_on_success",
+    "kuma_enabled",
+})
+
+
+def _unsafe_active_changes(task: Task, data: TaskIn) -> list[str]:
+    """Locked fields whose value would actually CHANGE. Sorted, for a stable 409.
+
+    Keyed on a changed value rather than on the field's presence in the payload,
+    because the form PATCHes the whole task rather than a diff: a lock on
+    presence would reject every edit the UI can make.
+    """
+    return sorted(
+        field
+        for field, value in data.model_dump().items()
+        if field not in ACTIVE_RUN_SAFE_FIELDS and getattr(task, field) != value
+    )
+
+
 @router.get("", response_model=list[TaskOut])
 def list_tasks(session: Session = Depends(get_session)):
     return [_to_out(t, session) for t in session.exec(select(Task)).all()]
@@ -168,7 +217,13 @@ async def update_task(task_id: int, data: TaskIn, session: Session = Depends(get
         if not t:
             raise HTTPException(404)
         if _has_active_run(session, task_id):
-            raise HTTPException(409, "task cannot be modified while a run is pending or running")
+            unsafe = _unsafe_active_changes(t, data)
+            if unsafe:
+                raise HTTPException(
+                    409,
+                    "a run is pending or running for this task; these fields "
+                    "cannot be changed until it finishes: " + ", ".join(unsafe),
+                )
         prev_cron = t.cron
         prev_enabled = t.enabled
         prev_kuma = t.kuma_enabled

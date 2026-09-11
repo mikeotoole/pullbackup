@@ -8,6 +8,7 @@ import signal
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +25,20 @@ _source_locks: dict[int, asyncio.Lock] = {}
 # This process-local lock assumes the supported single-Uvicorn-process deployment.
 _admission_lock = asyncio.Lock()
 _execution_tasks: set[asyncio.Task[int]] = set()
+# run id -> the execution this process owns for it.
+#
+# This is the ONLY thing a cancellation request is allowed to consult. Looking a
+# run up by pid would be unsound in both directions: pids are recycled, and a
+# run's pid is not knowable until after the exec. Keying on the run id means a
+# request can signal exactly the execution this application started for that
+# exact row, and nothing else — including nothing at all when the row is pending,
+# terminal, or belongs to a previous process.
+#
+# Entries are added when execution takes ownership of a pending row and removed
+# in a `finally`, so both exits (natural completion and cancellation) release
+# them. A leaked entry would be an unbounded dict AND a stale handle a later
+# cancellation could act on.
+_run_owners: dict[int, "RunOwner"] = {}
 log = logging.getLogger(__name__)
 _ZFS_DATASET = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9_.:%-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:%-]*)*"
@@ -52,6 +67,52 @@ class RunAdmission:
 
 class RunNotOwnedError(RuntimeError):
     """Execution was invoked for a row that it did not transition from pending."""
+
+
+class CancelOutcome(str, Enum):
+    """What a cancellation request actually achieved. Every value is honest.
+
+    ``cancelled``
+        This process owned the run, signalled its process group, and the row
+        reached a terminal state as a result.
+    ``already_finished``
+        The run was terminal by the time the request was serviced — either it
+        never was active, or it completed while the request was in flight. The
+        accompanying ``state`` is the state it actually reached, which may be
+        ``success``: a run that finished normally must never be reported as
+        cancelled.
+    ``not_owned``
+        The row exists and is active, but this process holds no execution for
+        it. That is a pending row not yet started, or a row left by a previous
+        process. Terminalizing it would be claiming an effect on something we
+        cannot signal.
+    ``not_found``
+        No such run.
+    """
+
+    cancelled = "cancelled"
+    already_finished = "already_finished"
+    not_owned = "not_owned"
+    not_found = "not_found"
+
+
+@dataclass(frozen=True)
+class CancelResult:
+    outcome: CancelOutcome
+    state: Optional[RunState] = None
+
+
+@dataclass
+class RunOwner:
+    """This process's handle on one executing run."""
+
+    execution: asyncio.Task[int]
+    # Set once the execution has finished its own terminalization, so a caller
+    # can wait for the row to settle rather than polling it.
+    settled: asyncio.Event
+    # True once a cancellation has been requested for this run, so the execution
+    # records `cancelled` rather than `failed` when it unwinds.
+    cancel_requested: bool = False
 
 
 @asynccontextmanager
@@ -476,6 +537,14 @@ async def _execute_run(run_id: int) -> int:
             run.files_transferred = files
             run.state = RunState.success if exit_code == 0 else RunState.failed
             if cancellation is not None:
+                # An OPERATOR cancellation gets its own terminal state, because
+                # `failed` would misreport a deliberate stop as a broken
+                # transfer. A cancellation from anywhere else — application
+                # shutdown, in particular — keeps `failed`: there the run really
+                # was interrupted rather than stopped on purpose, and an
+                # operator reading the history needs to tell the two apart.
+                if _cancel_was_requested(run_id):
+                    run.state = RunState.cancelled
                 run.error_message = "run cancelled"
             elif exit_code != 0:
                 run.error_message = f"rsync exited {exit_code}"
@@ -490,13 +559,29 @@ async def _execute_run(run_id: int) -> int:
         return run_id
 
 
+def _cancel_was_requested(run_id: int) -> bool:
+    """True when an operator asked for this specific run to stop.
+
+    The distinction matters at terminalization: an operator cancellation is
+    ``cancelled``, while any other interruption (application shutdown, a crashed
+    owner) stays ``failed``. Both write ``error_message = "run cancelled"``, so
+    the state is the only thing that tells them apart in the history.
+    """
+    owner = _run_owners.get(run_id)
+    return owner is not None and owner.cancel_requested
+
+
 def _terminalize_owned_run(run_id: int, error_message: str) -> bool:
     """Fail an active run when its execution owner exits before terminalization."""
     with Session(engine) as session:
         run = session.get(Run, run_id)
         if not run or run.state not in (RunState.pending, RunState.running):
             return False
-        run.state = RunState.failed
+        run.state = (
+            RunState.cancelled
+            if error_message == "run cancelled" and _cancel_was_requested(run_id)
+            else RunState.failed
+        )
         run.finished_at = utcnow()
         run.exit_code = -1
         run.error_message = error_message
@@ -510,7 +595,19 @@ def _terminalize_cancelled_run(run_id: int) -> bool:
 
 
 async def execute_run(run_id: int) -> int:
-    """Execute an admitted run and terminalize it if its owner exits early."""
+    """Execute an admitted run and terminalize it if its owner exits early.
+
+    Ownership is registered here rather than in ``start_admitted_run`` so that
+    every path into execution — the HTTP "run now", the scheduler, and the
+    ``run_task`` convenience wrapper — is cancellable by id. The ``finally``
+    releases the entry on BOTH exits, so the map holds exactly the runs this
+    process can actually signal.
+    """
+    owner = RunOwner(
+        execution=asyncio.current_task(),  # type: ignore[arg-type]
+        settled=asyncio.Event(),
+    )
+    _run_owners[run_id] = owner
     try:
         return await _execute_run(run_id)
     except asyncio.CancelledError:
@@ -524,6 +621,63 @@ async def execute_run(run_id: int) -> int:
             f"run owner failed: {type(error).__name__}: {error}",
         )
         raise
+    finally:
+        # Pop before signalling, so a waiter that wakes on `settled` can never
+        # observe a stale owner for a run that has already finished.
+        if _run_owners.get(run_id) is owner:
+            del _run_owners[run_id]
+        owner.settled.set()
+
+
+# How long a cancellation waits for the execution to unwind. `_terminate_process_group`
+# already bounds its own TERM->KILL escalation at 5s; this is the outer bound that
+# covers the log write and the terminal database commit that follow it.
+CANCEL_SETTLE_TIMEOUT_SECONDS = 30
+
+
+async def cancel_run(run_id: int) -> CancelResult:
+    """Stop the run this process owns for ``run_id``, or explain why it cannot.
+
+    Deliberately never terminalizes a row it cannot prove it owns: the only
+    thing that makes a run cancellable is an entry in ``_run_owners``, which is
+    written by ``execute_run`` itself. A pending row, a row left behind by a
+    previous process, and an unknown id all get an honest non-cancelled outcome
+    with the row untouched.
+
+    The completion-vs-cancel race is resolved by reading the row AFTER the
+    execution has settled rather than by asserting what the request intended. A
+    run that finished normally while the request was in flight reports
+    ``already_finished`` with ``success`` — never ``cancelled``.
+    """
+
+    def _state() -> Optional[RunState]:
+        with Session(engine) as session:
+            run = session.get(Run, run_id)
+            return None if run is None else run.state
+
+    state = _state()
+    if state is None:
+        return CancelResult(outcome=CancelOutcome.not_found)
+    if state not in (RunState.pending, RunState.running):
+        return CancelResult(outcome=CancelOutcome.already_finished, state=state)
+
+    owner = _run_owners.get(run_id)
+    if owner is None:
+        return CancelResult(outcome=CancelOutcome.not_owned, state=state)
+
+    owner.cancel_requested = True
+    owner.execution.cancel()
+    try:
+        await asyncio.wait_for(
+            owner.settled.wait(), timeout=CANCEL_SETTLE_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        log.error("run %s did not settle within the cancellation timeout", run_id)
+
+    settled_state = _state()
+    if settled_state == RunState.cancelled:
+        return CancelResult(outcome=CancelOutcome.cancelled, state=settled_state)
+    return CancelResult(outcome=CancelOutcome.already_finished, state=settled_state)
 
 
 def start_admitted_run(run_id: int) -> asyncio.Task[int]:

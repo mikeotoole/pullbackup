@@ -8,6 +8,7 @@ from sqlmodel import Session, select
 from ..db import get_session
 from ..models import Run, RunState
 from ..config import settings
+from ..services.runner import CancelOutcome, cancel_run as cancel_owned_run
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -26,6 +27,44 @@ def get_run(run_id: int, session: Session = Depends(get_session)):
     if not r:
         raise HTTPException(404)
     return r
+
+
+@router.post("/{run_id}/cancel")
+async def cancel_run(run_id: int, session: Session = Depends(get_session)):
+    """Stop a run this application is currently executing.
+
+    Authenticated like every other ``/api/`` route — the middleware allowlist in
+    ``http_auth.py`` names what is public, and this is not on it.
+
+    The four outcomes map to distinct HTTP answers rather than being collapsed
+    into a cheerful 200, because an operator who clicked Stop needs to know
+    whether the transfer actually stopped:
+
+    ``404``
+        No such run.
+    ``409 ... not owned``
+        The row is active but this process holds no execution for it — a pending
+        run that has not started, or one left behind by a previous process.
+        Nothing was signalled and nothing was written.
+    ``409 ... already <state>``
+        The run was already terminal, including the race where it completed
+        while the request was in flight. The state named is the one it really
+        reached, so a run that succeeded is never reported as cancelled.
+    ``200``
+        The process group was terminated and the run is ``cancelled``.
+    """
+    result = await cancel_owned_run(run_id)
+    if result.outcome == CancelOutcome.not_found:
+        raise HTTPException(404)
+    if result.outcome == CancelOutcome.not_owned:
+        raise HTTPException(
+            409,
+            f"run {run_id} is not owned by this process and cannot be cancelled",
+        )
+    if result.outcome == CancelOutcome.already_finished:
+        state = result.state.value if result.state else "unknown"
+        raise HTTPException(409, f"run {run_id} already finished ({state})")
+    return {"cancelled": True, "state": result.state.value}
 
 
 @router.get("/{run_id}/log")
