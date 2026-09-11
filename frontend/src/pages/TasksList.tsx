@@ -7,11 +7,21 @@ import { api, type Task } from "../lib/api";
 import { lastRunTime, relTime } from "../lib/relativeTime";
 import { StatusPill } from "../components/StatusPill";
 import { Toggle } from "../components/Toggle";
-import { BellIcon, CloneIcon, HistoryIcon, PencilIcon, PlayIcon, TrashIcon } from "../components/icons";
+import { BellIcon, CloneIcon, HistoryIcon, PencilIcon, PlayIcon, StopIcon, TrashIcon } from "../components/icons";
 
 // syncoid tasks are surfaced as "zfs" in the UI
 const typeLabel = (t: Task) => (t.task_type === "syncoid" ? "zfs" : "rsync");
 type TypeFilter = "all" | "rsync" | "zfs";
+
+/**
+ * Whether this row's work can be stopped right now.
+ *
+ * A run is stoppable only while it is RUNNING — `pending` has no subprocess to
+ * signal, and the server would refuse it — so the control is not rendered at
+ * all rather than rendered and failing on click. `last_run_id` is required too:
+ * without it there is no run to name in the request.
+ */
+const isStoppable = (t: Task) => t.last_run_state === "running" && t.last_run_id != null;
 
 export function TasksList() {
   const qc = useQueryClient();
@@ -30,6 +40,11 @@ export function TasksList() {
   const toggle = useMutation({
     mutationFn: (t: Task) => api.updateTask(t.id, { ...t, enabled: !t.enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["tasks"] }),
+    // Toggling is now permitted while a run is active, but the server still
+    // refuses a payload that changes a command-shaping field. Surfacing its 409
+    // text beats a silent revert that leaves the switch disagreeing with the
+    // stored row.
+    onError: (e) => alert(`Could not change enabled: ${String((e as Error).message)}`),
   });
   const runNow = useMutation({
     mutationFn: (id: number) => api.runTask(id),
@@ -37,6 +52,20 @@ export function TasksList() {
       // Refetch immediately so the row flips to "running"
       qc.invalidateQueries({ queryKey: ["tasks"] });
     },
+  });
+  const stopRun = useMutation({
+    mutationFn: (runId: number) => api.cancelRun(runId),
+    onSuccess: () => {
+      // Both queries: "tasks" drives this row's state pill, and "runs" drives
+      // the history and detail views. Without the second, an open run view
+      // keeps showing a run the operator just stopped.
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+    },
+    // The server's own text is the answer that matters: "already finished
+    // (success)" means the transfer completed on its own, which is a different
+    // outcome from "the stop failed".
+    onError: (e) => alert(`Could not stop the run: ${String((e as Error).message)}`),
   });
   const del = useMutation({
     mutationFn: (id: number) => api.deleteTask(id),
@@ -112,6 +141,9 @@ export function TasksList() {
                     <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="inline-block w-7 text-center text-muted hover:text-white"><BellIcon className="inline-block w-4 h-4 align-middle" /></a>
                   )}
                   <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white"><PlayIcon className="inline-block w-4 h-4 align-middle" /></button>
+                  {isStoppable(t) && (
+                    <button title="stop the running run" aria-label="Stop run" onClick={() => confirm(`Stop the running ${typeLabel(t)} run for ${t.name}?`) && stopRun.mutate(t.last_run_id!)} className="inline-block w-7 text-center text-muted hover:text-danger"><StopIcon className="inline-block w-4 h-4 align-middle" /></button>
+                  )}
                   <button title="delete" aria-label="Delete task" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-danger"><TrashIcon className="inline-block w-4 h-4 align-middle" /></button>
                 </td>
               </tr>
@@ -177,6 +209,9 @@ export function TasksList() {
                   <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><BellIcon className="w-5 h-5" /></a>
                 )}
                 <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><PlayIcon className="w-5 h-5" /></button>
+                {isStoppable(t) && (
+                  <button title="stop the running run" aria-label="Stop run" onClick={() => confirm(`Stop the running ${typeLabel(t)} run for ${t.name}?`) && stopRun.mutate(t.last_run_id!)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger"><StopIcon className="w-5 h-5" /></button>
+                )}
                 <button title="delete" aria-label="Delete task" onClick={() => confirm(`Delete task ${t.name}?`) && del.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger"><TrashIcon className="w-5 h-5" /></button>
               </div>
             </div>

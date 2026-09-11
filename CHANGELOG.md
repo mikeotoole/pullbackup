@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stop a run that is already in flight. Previously the only way to end a
+  transfer was to restart the whole application, which terminates every run and
+  throws away the scheduler's state. `POST /api/runs/{id}/cancel` terminates the
+  run's isolated process group through the existing graceful TERM → bounded wait
+  → KILL path (so the ssh or `zfs send` the transfer spawned goes with it), keeps
+  the run's log, and records the previously-unused `cancelled` state. The task
+  list shows a Stop control on desktop and phone while a run is RUNNING, behind a
+  confirmation, and Run now stays a separate control.
+
+  Cancellation is keyed on a run-id ownership map rather than on a pid: pids are
+  recycled, and a run's pid is not knowable until after the exec. A request can
+  therefore only ever signal the execution this process started for that exact
+  run. A pending run that has not started, a run left behind by a previous
+  process, and an unknown id each get an honest refusal with the row untouched,
+  and a run that completes while the stop request is in flight reports
+  `already finished (success)` rather than claiming it was cancelled.
+
+- Tasks can now be edited while a run is active, for the fields that cannot
+  reach a transfer already executing: name, description, cron, enabled, and the
+  Matrix/Uptime Kuma notification flags. Everything that shapes the command or
+  decides whose data is copied — source, paths, task type, rsync/syncoid flags
+  and arguments, bandwidth, pruning — stays locked with a 409 that names each
+  unsafe field. The lock is on a CHANGED value rather than on a field's presence,
+  so the form's full-task PATCH is accepted. Disabling a task mid-run now
+  succeeds too: it removes the future scheduler job and sends no signal, and the
+  running transfer finishes normally.
+
 - `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), GitHub issue templates and a
   pull-request template. The bug template asks for a version and redacted logs
   up front, because a backup tool's logs are full of real hostnames and paths
