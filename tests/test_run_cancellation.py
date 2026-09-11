@@ -19,6 +19,8 @@ The tests here pin all three, plus the races between them.
 
 import asyncio
 import os
+import pathlib
+import subprocess
 
 import pytest
 import pytest_asyncio
@@ -64,9 +66,18 @@ def blocking_binary(tmp_path, monkeypatch):
         # it spawned, for syncoid the zfs send/receive pipeline — so the tests
         # record its pid and assert it is gone afterwards. Both processes also
         # carry their own iteration bound as a second line of defence.
+        # The grandchild also advances a heartbeat file on every iteration. Its
+        # pid alone cannot prove it stopped: see `wait_until_dead` for why a
+        # terminated process can stay signalable indefinitely. A heartbeat that
+        # stops advancing is a direct measurement of "it is doing no more work",
+        # which is the guarantee the cancellation actually owes.
         stub.write_text(
             "#!/bin/sh\n"
-            "sh -c 'i=0; while [ $i -lt 6000 ]; do sleep 0.05; i=$((i+1)); done' &\n"
+            "sh -c 'i=0; while [ $i -lt 6000 ]; do\n"
+            '  echo $i > "$PULLBACK_TEST_CHILD_BEAT_FILE"\n'
+            "  sleep 0.05\n"
+            "  i=$((i+1))\n"
+            "done' &\n"
             'echo $! > "$PULLBACK_TEST_CHILD_PID_FILE"\n'
             "i=0\n"
             'while [ ! -f "$PULLBACK_TEST_RELEASE_FILE" ] && [ $i -lt 6000 ]; do\n'
@@ -79,6 +90,7 @@ def blocking_binary(tmp_path, monkeypatch):
         monkeypatch.setenv("PATH", f"{bin_dir}:/bin:/usr/bin")
         monkeypatch.setenv("PULLBACK_TEST_RELEASE_FILE", str(release_file))
         monkeypatch.setenv("PULLBACK_TEST_CHILD_PID_FILE", str(child_pid_file))
+        monkeypatch.setenv("PULLBACK_TEST_CHILD_BEAT_FILE", str(beat_file(child_pid_file)))
         released.append(release_file)
         return release_file, child_pid_file
 
@@ -138,6 +150,11 @@ def make_syncoid_task(engine, tmp_path):
         return stored
 
 
+def beat_file(child_pid_file):
+    """Where the stub's grandchild records its liveness heartbeat."""
+    return child_pid_file.with_suffix(".beat")
+
+
 async def wait_for_child_pid(child_pid_file):
     for _ in range(500):
         if child_pid_file.exists():
@@ -148,15 +165,91 @@ async def wait_for_child_pid(child_pid_file):
     raise AssertionError("the stub never recorded a child pid")
 
 
-async def wait_until_dead(pid, timeout=5.0):
-    """True once `pid` is no longer signalable. Signal delivery is async."""
+async def wait_for_first_beat(child_pid_file):
+    """Return once the grandchild has proven it is actually running.
+
+    Without this the "it stopped beating" assertion could be satisfied
+    vacuously by a grandchild that had not started beating yet.
+    """
+    path = beat_file(child_pid_file)
+    for _ in range(500):
+        if path.exists() and path.read_text().strip():
+            return path
+        await asyncio.sleep(0.01)
+    raise AssertionError("the stub's grandchild never wrote a heartbeat")
+
+
+def process_state(pid):
+    """The kernel's state letter for `pid`, or None if no such process exists.
+
+    Linux exposes /proc. macOS does not, but ships `ps`. The slim CI container
+    has /proc but NOT `ps` (procps is not installed), so neither source alone
+    covers both hosts this suite has to pass on.
+    """
+    try:
+        raw = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        if pathlib.Path("/proc/self/stat").exists():
+            return None  # /proc works here, so the pid genuinely does not exist
+    except OSError:
+        pass
+    else:
+        return raw.rsplit(")", 1)[1].split()[0]
+
+    completed = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True
+    )
+    if completed.returncode != 0:
+        return None
+    state = completed.stdout.strip()
+    return state[:1] if state else None
+
+
+async def wait_until_dead(pid, timeout=10.0):
+    """True once `pid` is no longer an *executing* process.
+
+    Deliberately NOT ``os.kill(pid, 0)`` raising ProcessLookupError. A process
+    that has been terminated but whose exit status nobody has collected stays a
+    **zombie**: it has already released its memory, file descriptors and network
+    connections — it is dead in every sense this cancellation guarantee cares
+    about — yet it keeps a pid-table entry, so ``os.kill(pid, 0)`` on it
+    SUCCEEDS, forever.
+
+    Whether that zombie lingers is a property of the *host*, not of the
+    cancellation. The stub's grandchild is orphaned the moment its parent dies,
+    so it reparents to pid 1, and pid 1's reaping behaviour decides. On macOS
+    launchd reaps in milliseconds and the old ``os.kill``-based probe passed. In
+    the CI container pid 1 is a non-reaping placeholder — Gitea's act_runner
+    holds the container open and ``docker exec``s each step — so the zombie is
+    permanent and the identical probe reported a correctly-killed grandchild as
+    "survived". Reproduced against this exact commit on both hosts; the
+    production behaviour was never different between them.
+
+    So: gone, or reaped-pending. Both mean terminated. Anything else is alive.
+    """
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
-        try:
-            os.kill(pid, 0)
-        except (ProcessLookupError, PermissionError):
+        if process_state(pid) in (None, "Z"):
             return True
         await asyncio.sleep(0.02)
+    return False
+
+
+async def wait_until_stopped_beating(path, timeout=10.0):
+    """True once the grandchild stops advancing its heartbeat file.
+
+    The behavioural half of the guarantee, and the half that cannot be fooled:
+    it is immune to zombie state and to pid reuse alike, because it observes
+    work actually being done rather than a pid-table entry. A grandchild that
+    survived a cancellation keeps counting, and this returns False.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        before = path.read_text() if path.exists() else None
+        await asyncio.sleep(0.3)  # 6x the grandchild's 0.05s beat interval
+        if path.exists() and path.read_text() == before:
+            return True
     return False
 
 
@@ -207,6 +300,7 @@ async def test_cancel_run_terminates_the_rsync_group_and_marks_it_cancelled(
         sqlite_engine, task.id, monkeypatch
     )
     child_pid = await wait_for_child_pid(child_pid_file)
+    beat = await wait_for_first_beat(child_pid_file)
 
     try:
         result = await runner.cancel_run(run_id)
@@ -216,6 +310,13 @@ async def test_cancel_run_terminates_the_rsync_group_and_marks_it_cancelled(
     assert result.outcome == runner.CancelOutcome.cancelled
     assert result.state == RunState.cancelled
     assert captured["process"].returncode is not None
+    # Two independent probes of the same guarantee. The heartbeat is the one
+    # that cannot be fooled: a grandchild that outlived the cancellation keeps
+    # counting, whatever the pid table says.
+    assert await wait_until_stopped_beating(beat), (
+        "the child of the cancelled subprocess is still doing work; the whole "
+        "process group must be terminated, not just the direct child"
+    )
     assert await wait_until_dead(child_pid), (
         "the child of the cancelled subprocess survived; the whole process "
         "group must be terminated, not just the direct child"
@@ -240,6 +341,7 @@ async def test_cancel_run_terminates_the_syncoid_group_and_marks_it_cancelled(
         sqlite_engine, task.id, monkeypatch
     )
     child_pid = await wait_for_child_pid(child_pid_file)
+    beat = await wait_for_first_beat(child_pid_file)
 
     try:
         result = await runner.cancel_run(run_id)
@@ -248,6 +350,7 @@ async def test_cancel_run_terminates_the_syncoid_group_and_marks_it_cancelled(
 
     assert result.outcome == runner.CancelOutcome.cancelled
     assert captured["process"].returncode is not None
+    assert await wait_until_stopped_beating(beat)
     assert await wait_until_dead(child_pid)
     with Session(sqlite_engine) as session:
         assert session.get(Run, run_id).state == RunState.cancelled
