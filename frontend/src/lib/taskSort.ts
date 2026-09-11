@@ -122,13 +122,11 @@ export function sortTasks<T extends SortableTask>(
   const sign = pref.direction === "asc" ? 1 : -1;
 
   return [...tasks].sort((a, b) => {
-    const ordered = compareKeys(keyOf(a, pref.column, sourceName), keyOf(b, pref.column, sourceName));
+    const aKey = keyOf(a, pref.column, sourceName);
+    const bKey = keyOf(b, pref.column, sourceName);
+    const ordered = compareKeys(aKey, bKey);
     // `compareKeys` already sinks nulls; only the non-null ordering reverses.
-    if (ordered !== 0) {
-      const aNull = keyOf(a, pref.column, sourceName) === null;
-      const bNull = keyOf(b, pref.column, sourceName) === null;
-      return aNull || bNull ? ordered : ordered * sign;
-    }
+    if (ordered !== 0) return aKey === null || bKey === null ? ordered : ordered * sign;
     return a.id - b.id;
   });
 }

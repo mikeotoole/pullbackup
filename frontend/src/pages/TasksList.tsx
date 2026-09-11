@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mike O'Toole
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type Task } from "../lib/api";
 import { lastRunTime, relTime } from "../lib/relativeTime";
+import { nextSort, sortTasks, type SortColumn, type SortPreference } from "../lib/taskSort";
+import { loadSort, saveSort } from "../lib/taskSortStorage";
 import { StatusPill } from "../components/StatusPill";
 import { Toggle } from "../components/Toggle";
 import { BellIcon, CloneIcon, HistoryIcon, PencilIcon, PlayIcon, StopIcon, TrashIcon } from "../components/icons";
@@ -23,6 +25,44 @@ type TypeFilter = "all" | "rsync" | "zfs";
  */
 const isStoppable = (t: Task) => t.last_run_state === "running" && t.last_run_id != null;
 
+const ariaDirection = (pref: SortPreference | null, column: SortColumn) =>
+  pref?.column === column ? (pref.direction === "asc" ? "ascending" : "descending") : "none";
+
+/** A native button gives the column header Enter/Space behavior for free. */
+function SortHeader({
+  column,
+  label,
+  pref,
+  onSort,
+}: {
+  column: SortColumn;
+  label: ReactNode;
+  pref: SortPreference | null;
+  onSort: (column: SortColumn) => void;
+}) {
+  const active = pref?.column === column;
+  return (
+    <th className="px-4 py-3 font-medium" aria-sort={ariaDirection(pref, column)}>
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className="inline-flex items-center gap-1 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent rounded"
+      >
+        <span>{label}</span>
+        {active && (
+          <span
+            data-sort-indicator={pref.direction}
+            className="text-[10px] font-mono text-accent"
+            aria-hidden="true"
+          >
+            {pref.direction}
+          </span>
+        )}
+      </button>
+    </th>
+  );
+}
+
 export function TasksList() {
   const qc = useQueryClient();
   const { data: tasks = [] } = useQuery({
@@ -35,7 +75,19 @@ export function TasksList() {
   const { data: sys } = useQuery({ queryKey: ["sysinfo"], queryFn: api.systemInfo });
   const sourceById = Object.fromEntries(sources.map(s => [s.id, s] as const));
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
-  const shown = tasks.filter(t => typeFilter === "all" || typeLabel(t) === typeFilter);
+  // Lazy initialization reads this browser profile exactly once per mount. A
+  // blocked or malformed localStorage simply yields the server's default order.
+  const [sort, setSort] = useState<SortPreference | null>(() => loadSort());
+  const filtered = tasks.filter(t => typeFilter === "all" || typeLabel(t) === typeFilter);
+  // Filtering first matters: the chosen order applies to the visible set, and
+  // both desktop rows and phone cards consume this one projection.
+  const shown = sortTasks(filtered, sort, sources);
+
+  const chooseSort = (column: SortColumn) => {
+    const selected = nextSort(sort, column);
+    setSort(selected);
+    saveSort(selected);
+  };
 
   const toggle = useMutation({
     mutationFn: (t: Task) => api.updateTask(t.id, { ...t, enabled: !t.enabled }),
@@ -102,15 +154,15 @@ export function TasksList() {
         <table className="w-full text-sm">
           <thead className="text-muted text-left">
             <tr className="border-b border-border">
-              <th className="px-4 py-3 font-medium">remote path</th>
-              <th className="px-4 py-3 font-medium">type</th>
-              <th className="px-4 py-3 font-medium">source</th>
-              <th className="px-4 py-3 font-medium">frequency</th>
-              <th className="px-4 py-3 font-medium">next run</th>
-              <th className="px-4 py-3 font-medium">last run</th>
-              <th className="px-4 py-3 font-medium">enabled</th>
-              <th className="px-4 py-3 font-medium">state</th>
-              <th className="px-4 py-3 font-medium whitespace-nowrap w-36 text-right">actions</th>
+              <SortHeader column="remote_path" label="remote path" pref={sort} onSort={chooseSort} />
+              <SortHeader column="type" label="type" pref={sort} onSort={chooseSort} />
+              <SortHeader column="source" label="source" pref={sort} onSort={chooseSort} />
+              <SortHeader column="frequency" label="frequency" pref={sort} onSort={chooseSort} />
+              <SortHeader column="next_run" label="next run" pref={sort} onSort={chooseSort} />
+              <SortHeader column="last_run" label="last run" pref={sort} onSort={chooseSort} />
+              <SortHeader column="enabled" label="enabled" pref={sort} onSort={chooseSort} />
+              <SortHeader column="state" label="state" pref={sort} onSort={chooseSort} />
+              <th className="px-4 py-3 font-medium whitespace-nowrap w-36 text-right" aria-sort="none">actions</th>
             </tr>
           </thead>
           <tbody>
