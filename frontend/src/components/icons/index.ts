@@ -19,5 +19,6 @@ export { ExternalLinkIcon } from "./ExternalLinkIcon";
 export { HistoryIcon } from "./HistoryIcon";
 export { PencilIcon } from "./PencilIcon";
 export { PlayIcon } from "./PlayIcon";
+export { StopIcon } from "./StopIcon";
 export { TrashIcon } from "./TrashIcon";
 export { WarningIcon } from "./WarningIcon";

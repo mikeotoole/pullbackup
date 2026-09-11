@@ -9,24 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stop a run that is already in flight. Previously the only way to end a
+  transfer was to restart the whole application, which terminates every run and
+  throws away the scheduler's state. `POST /api/runs/{id}/cancel` terminates the
+  run's isolated process group through the existing graceful TERM → bounded wait
+  → KILL path (so the ssh or `zfs send` the transfer spawned goes with it), keeps
+  the run's log, and records the previously-unused `cancelled` state. The task
+  list shows a Stop control on desktop and phone while a run is RUNNING, behind a
+  confirmation, and Run now stays a separate control.
+
+  Cancellation is keyed on a run-id ownership map rather than on a pid: pids are
+  recycled, and a run's pid is not knowable until after the exec. A request can
+  therefore only ever signal the execution this process started for that exact
+  run. A pending run that has not started, a run left behind by a previous
+  process, and an unknown id each get an honest refusal with the row untouched,
+  and a run that completes while the stop request is in flight reports
+  `already finished (success)` rather than claiming it was cancelled. A stop
+  that was sent but has not taken effect answers 504 "has not stopped (still
+  running)" — not a terminal outcome, because the transfer is still copying
+  bytes and an operator told otherwise would walk away from it.
+
+  A cancelled run is announced as `cancelled`, not `FAILED`, and pushes nothing
+  to Uptime Kuma: a deliberate stop is not a broken backup, and `up` would claim
+  a transfer that never happened. Genuine failures and successes are unchanged.
+
+- Tasks can now be edited while a run is active, for the fields that cannot
+  reach a transfer already executing: name, description, cron, enabled, and the
+  Matrix/Uptime Kuma notification flags. Everything that shapes the command or
+  decides whose data is copied — source, paths, task type, rsync/syncoid flags
+  and arguments, bandwidth, pruning — stays locked with a 409 that names each
+  unsafe field. The lock is on a CHANGED value rather than on a field's presence,
+  so the form's full-task PATCH is accepted. Disabling a task mid-run now
+  succeeds too: it removes the future scheduler job and sends no signal, and the
+  running transfer finishes normally.
+
 - `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), GitHub issue templates and a
   pull-request template. The bug template asks for a version and redacted logs
   up front, because a backup tool's logs are full of real hostnames and paths
   and the first reply to a report should not have to be "please remove your
   network layout from this".
-
-### Removed
-
-- `docs/research/product-name.md` and its guard test. The note weighed a rename
-  away from "Pullback" because of a namespace collision with an existing
-  rsync-based project of nearly the same name; that decision was made and the
-  deliberation belongs in private notes rather than shipped alongside the
-  product it argues about.
-
-
-
-
-### Added
 
 - The README now shows the UI. Six screenshots — the task list, a finished run
   with its full `rsync` output, per-task run history, the task form, sources,
@@ -36,6 +57,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   image is missing, if a committed screenshot is never shown, or if the README
   stops saying where the data came from; the last of those is the only thing
   keeping a hurried maintainer from publishing a picture of their own instance.
+
+- Build instructions. No image is published yet, so the README's Deployment
+  section now says to build one from a checkout, and
+  `docker/compose.example.yaml` builds from the repository root instead of
+  pulling a placeholder `ghcr.io/OWNER` image that never existed.
+
+### Changed
+
+- Run logs open with `# pullbackup run N (type)` rather than the pre-rename
+  `# pullback run`; the seeded demo instance writes the same header.
+- The frontend package is `pullbackup-frontend` in `package.json` and the lock
+  file, matching the product name everywhere else.
+
+### Removed
+
+- `docs/research/product-name.md` and its guard test. The note weighed a rename
+  away from "Pullback" because of a namespace collision with an existing
+  rsync-based project of nearly the same name; that decision was made and the
+  deliberation belongs in private notes rather than shipped alongside the
+  product it argues about.
+
+- `frontend/tsconfig.tsbuildinfo` is no longer tracked. It is TypeScript's
+  incremental-build cache and changed on every build; `*.tsbuildinfo` is now
+  ignored.
 
 ## [0.14.0] - 2026-09-03
 

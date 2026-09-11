@@ -172,4 +172,18 @@ export const api = {
     http<Run[]>("/api/runs" + (task_id ? `?task_id=${task_id}` : "")),
   getRun: (id: number) => http<Run>(`/api/runs/${id}`),
   getRunLog: (id: number) => http<{ content: string }>(`/api/runs/${id}/log`),
+  /**
+   * Stop a run the server is currently executing.
+   *
+   * Rejects with the server's own text when the run cannot be stopped —
+   * "already finished (success)", "not owned by this process" and the 504
+   * "has not stopped (still running)" are materially different answers for an
+   * operator, and collapsing them into a generic failure would hide whether
+   * the transfer actually ended. The last one especially: it means the stop
+   * was requested and the transfer is STILL copying bytes.
+   */
+  cancelRun: (id: number) =>
+    http<{ cancelled: boolean; state: RunState }>(`/api/runs/${id}/cancel`, {
+      method: "POST",
+    }),
 };

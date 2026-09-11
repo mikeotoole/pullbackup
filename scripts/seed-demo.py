@@ -362,7 +362,7 @@ def rsync_log(task: dict, run_id: int, args: str, files: int, bytes_: int,
               seconds: int, rng: random.Random, failure: str | None) -> str:
     """A believable rsync log, in the exact shape the runner writes.
 
-    The runner opens the log with a ``# pullback run N (type)`` header and an
+    The runner opens the log with a ``# pullbackup run N (type)`` header and an
     ``# args:`` line, then hands the file to rsync as stdout. Everything after
     the blank line is therefore literal rsync output — here, invented output
     with a real ``--info=stats2`` summary block.
@@ -371,7 +371,7 @@ def rsync_log(task: dict, run_id: int, args: str, files: int, bytes_: int,
     speed = bytes_ / max(seconds, 1)
     sample = _sample_paths(task, rng)
     lines = [
-        f"# pullback run {run_id} (rsync)",
+        f"# pullbackup run {run_id} (rsync)",
         f"# args: {args}",
         "",
         "receiving incremental file list",
@@ -415,7 +415,7 @@ def syncoid_log(task: dict, run_id: int, args: str, bytes_: int, seconds: int,
     human = _human(bytes_)
     rate = _human(int(bytes_ / max(seconds, 1)))
     lines = [
-        f"# pullback run {run_id} (syncoid)",
+        f"# pullbackup run {run_id} (syncoid)",
         f"# args: {args}",
         "",
         f"INFO: Sending incremental {src}@autosnap_2026-08-28_00:00:04 ... "

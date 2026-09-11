@@ -53,8 +53,13 @@ async def dispatch(run_id: int) -> None:
     if not task or not source:
         return
 
+    # Three outcomes, not two. `cancelled` exists so a deliberate operator stop
+    # is not filed as a broken transfer, and that distinction survives only if
+    # the notification plane honours it: `ok = state == success` alone would put
+    # a cancellation in the failure branch and tell Matrix the task FAILED.
+    cancelled = run.state == RunState.cancelled
     ok = run.state == RunState.success
-    label = "succeeded" if ok else "FAILED"
+    label = "cancelled" if cancelled else ("succeeded" if ok else "FAILED")
     mb = run.bytes_transferred or 0
     body = (
         f"pullback: task '{task.name}' {label}\n"
@@ -66,5 +71,9 @@ async def dispatch(run_id: int) -> None:
     if task.notify_matrix and (not ok or task.notify_matrix_on_success):
         await _matrix_send(body)
 
-    if task.kuma_enabled and task.kuma_push_token:
+    # A cancellation is not a health signal in either direction: `down` would
+    # report a broken backup that is not broken, and `up` would claim one that
+    # never happened. Push nothing and let the monitor's own heartbeat window
+    # decide.
+    if task.kuma_enabled and task.kuma_push_token and not cancelled:
         await _kuma_push(task.kuma_push_token, "up" if ok else "down", f"exit={run.exit_code}")

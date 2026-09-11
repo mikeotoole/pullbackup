@@ -13,3 +13,4 @@ frontend/dist/
 data/
 *.log
 .DS_Store
+*.tsbuildinfo
