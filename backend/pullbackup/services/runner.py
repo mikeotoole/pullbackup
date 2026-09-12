@@ -518,9 +518,21 @@ def validate_ssh_user(user: str) -> str:
     return user
 
 
-async def _prune_zfs_hourly(dataset: str, keep: int, log_path: Path) -> None:
+async def _prune_zfs_hourly(
+    dataset: str, keep: int, log_path: Path, deadline: Optional[float] = None
+) -> None:
     """Keep the N newest zfs-auto-snap_hourly snapshots on `dataset`, destroy older ones.
-    Mirrors the user's syncoid script: anchored to `<dataset>@zfs-auto-snap_hourly-`."""
+    Mirrors the user's syncoid script: anchored to `<dataset>@zfs-auto-snap_hourly-`.
+
+    `deadline` is the run's absolute loop deadline, shared with the transfer.
+    It is not optional in practice: pruning runs AFTER the transfer but still
+    inside the destination exclusion, the concurrency permit, the source lock,
+    AND the ownership entry — so a `zfs list`/`zfs destroy` that blocks on a
+    suspended pool wedges the run exactly as the hung transfer did in
+    September, with the watchdog unable to help because the run is legitimately
+    owned. Found by review on the first version of this fix, which bounded only
+    the transfer.
+    """
     if keep < 1:
         raise ValueError("prune retention must be at least 1")
     dataset = validate_zfs_destination(dataset)
@@ -530,7 +542,7 @@ async def _prune_zfs_hourly(dataset: str, keep: int, log_path: Path) -> None:
         start_new_session=True,
     )
     try:
-        out, _ = await proc.communicate()
+        out, _ = await _communicate_bounded(proc, deadline)
     except asyncio.CancelledError:
         await _shield_process_cleanup(proc)
         raise
@@ -547,7 +559,7 @@ async def _prune_zfs_hourly(dataset: str, keep: int, log_path: Path) -> None:
                 start_new_session=True,
             )
             try:
-                o, _ = await p.communicate()
+                o, _ = await _communicate_bounded(p, deadline)
             except asyncio.CancelledError:
                 await _shield_process_cleanup(p)
                 raise
@@ -602,8 +614,31 @@ async def _shield_process_cleanup(proc: asyncio.subprocess.Process) -> None:
                 return
 
 
-async def _await_bounded(proc: asyncio.subprocess.Process, timeout: int) -> int:
-    """Wait for `proc`, killing its process group if it outlives `timeout`.
+def _run_deadline(timeout: int) -> Optional[float]:
+    """The absolute loop time by which a run must be finished, or None.
+
+    A single deadline for the whole run rather than a per-subprocess timeout.
+    Per-subprocess bounds would let a run with a transfer plus a prune take up
+    to twice its configured ceiling, and — worse — a prune with many `zfs
+    destroy` calls could take the ceiling EACH, which is unbounded again by
+    another name. What the operator configures is how long a run may take.
+    """
+    if timeout <= 0:
+        return None
+    return asyncio.get_running_loop().time() + timeout
+
+
+def _remaining(deadline: Optional[float]) -> Optional[float]:
+    """Seconds left before `deadline`, or None when unbounded. Never negative."""
+    if deadline is None:
+        return None
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
+async def _await_bounded(
+    proc: asyncio.subprocess.Process, deadline: Optional[float], timeout: int
+) -> int:
+    """Wait for `proc`, killing its process group if the run's deadline passes.
 
     The missing ceiling from the 2026-09 incident. `proc.wait()` alone is
     unbounded, and a subprocess stuck on a dead network path or a refused
@@ -611,9 +646,9 @@ async def _await_bounded(proc: asyncio.subprocess.Process, timeout: int) -> int:
     subsequent admission for that source, is held until somebody restarts the
     application.
 
-    `timeout <= 0` restores the unbounded wait verbatim. Deliberately a plain
-    `proc.wait()` rather than `wait_for(..., timeout=None)` so there is nothing
-    between the caller and the pre-fix behaviour on that path.
+    `deadline is None` restores the unbounded wait verbatim. Deliberately a
+    plain `proc.wait()` rather than `wait_for(..., timeout=None)` so there is
+    nothing between the caller and the pre-fix behaviour on that path.
 
     On expiry the group is torn down through `_terminate_process_group` — the
     same TERM -> 5s -> KILL escalation cancellation uses. There is exactly one
@@ -626,10 +661,11 @@ async def _await_bounded(proc: asyncio.subprocess.Process, timeout: int) -> int:
     the same shielded cleanup the unbounded path used, so an operator cancel
     and an application shutdown behave exactly as they did before.
     """
-    if timeout <= 0:
+    remaining = _remaining(deadline)
+    if remaining is None:
         return await proc.wait()
     try:
-        return await asyncio.wait_for(proc.wait(), timeout)
+        return await asyncio.wait_for(proc.wait(), remaining)
     except TimeoutError:
         log.error(
             "run subprocess exceeded the %ss execution timeout; terminating "
@@ -641,6 +677,28 @@ async def _await_bounded(proc: asyncio.subprocess.Process, timeout: int) -> int:
     except asyncio.CancelledError:
         await _shield_process_cleanup(proc)
         raise
+
+
+async def _communicate_bounded(
+    proc: asyncio.subprocess.Process, deadline: Optional[float]
+) -> tuple[bytes, Optional[bytes]]:
+    """`proc.communicate()` under the run's deadline, killing the group on expiry.
+
+    The prune path reads a subprocess's output rather than only waiting on it,
+    so it needs its own bounded form. Same deadline, same single kill path.
+    """
+    remaining = _remaining(deadline)
+    if remaining is None:
+        return await proc.communicate()
+    try:
+        return await asyncio.wait_for(proc.communicate(), remaining)
+    except TimeoutError:
+        log.error(
+            "run subprocess exceeded the execution deadline during pruning; "
+            "terminating its process group"
+        )
+        await _shield_process_cleanup(proc)
+        raise RunTimeout("prune") from None
 
 
 async def _execute_run(run_id: int) -> int:
@@ -695,7 +753,14 @@ async def _execute_run(run_id: int) -> int:
         # Read once, here, rather than at each use. A run is bounded by the
         # ceiling that was configured when it STARTED; a reload mid-transfer
         # must not retroactively shorten a transfer that is already copying.
+        #
+        # ONE deadline for the whole run, not one per subprocess. The prune
+        # that follows a syncoid transfer shares it, so a run cannot spend its
+        # full ceiling on the transfer and then its full ceiling again on
+        # pruning — which would be the same unboundedness wearing a bound's
+        # clothing.
         timeout = settings.run_timeout_seconds
+        deadline = _run_deadline(timeout)
 
         exit_code: Optional[int] = None
         proc: Optional[asyncio.subprocess.Process] = None
@@ -717,7 +782,7 @@ async def _execute_run(run_id: int) -> int:
                         start_new_session=True,
                         pass_fds=pass_fds,
                     )
-                    exit_code = await _await_bounded(proc, timeout)
+                    exit_code = await _await_bounded(proc, deadline, timeout)
         except RunTimeout:
             # The bound that did not exist during the 2026-09 incident. The
             # subprocess group has already been terminated by `_await_bounded`,
@@ -747,7 +812,24 @@ async def _execute_run(run_id: int) -> int:
         # syncoid: optional snapshot prune on the destination dataset after a clean run
         if task.task_type == "syncoid" and exit_code == 0 and task.prune_keep_hourly:
             try:
-                await _prune_zfs_hourly(task.local_path, task.prune_keep_hourly, log_path)
+                await _prune_zfs_hourly(
+                    task.local_path, task.prune_keep_hourly, log_path, deadline
+                )
+            except RunTimeout:
+                # A hung prune is a wedge, not a cosmetic post-step failure.
+                # It holds the destination, the concurrency permit, the source
+                # lock and the ownership entry exactly as the transfer does, so
+                # swallowing it into the generic handler below would leave the
+                # run `success` while its resources stayed held — the September
+                # incident with a friendlier state name. The transfer DID
+                # succeed, but the run did not finish, so the run is failed.
+                timed_out_after = timeout
+                with open(log_path, "ab") as logf:
+                    logf.write(
+                        f"\n# runner timeout after {timeout}s during prune; "
+                        f"subprocess group terminated\n".encode()
+                    )
+                exit_code = -1
             except Exception as e:
                 with open(log_path, "ab") as logf:
                     logf.write(f"\n# prune error: {e}\n".encode())

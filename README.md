@@ -214,13 +214,18 @@ skipped. Runs from the same source also remain serialized.
 
 `PULLBACKUP_RUN_TIMEOUT_SECONDS` (default `86400`, one day) bounds how long a
 single run may execute. A backup subprocess can hang indefinitely — a dead
-network path, a `zfs receive` refusing a diverged incremental — and without a
-ceiling it holds its executor slot forever while its run row stays `running`,
-which blocks every subsequent run for that source. On expiry the run's whole
-process group is terminated (so the ssh or `zfs send | zfs receive` goes with
-it) and the run is recorded as **failed**, with the exceeded bound named in the
-error. Set it to `0` to wait forever if your initial replication genuinely runs
-longer than any ceiling you would set; a negative value is refused at startup.
+network path, a `zfs receive` refusing a diverged incremental, a `zfs destroy`
+on a suspended pool — and without a ceiling it holds its executor slot forever
+while its run row stays `running`, which blocks every subsequent run for that
+source. On expiry the run's whole process group is terminated (so the ssh or
+`zfs send | zfs receive` goes with it) and the run is recorded as **failed**,
+with the exceeded bound named in the error.
+
+The ceiling covers the **whole run**, not each subprocess: a Syncoid task that
+also prunes snapshots shares one deadline across its transfer and its pruning,
+so a run can never spend its full ceiling twice. Set it to `0` to wait forever
+if your initial replication genuinely runs longer than any ceiling you would
+set; a negative value is refused at startup.
 
 `PULLBACKUP_WATCHDOG_INTERVAL_SECONDS` (default `60`) is how often the runner
 reconciles active run rows against the executions it is actually running, and

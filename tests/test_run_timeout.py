@@ -570,6 +570,144 @@ async def test_the_watchdog_leaves_a_run_waiting_on_a_busy_destination_alone(
 
 
 @pytest.mark.asyncio
+async def test_a_hung_post_transfer_prune_is_bounded_too(
+    sqlite_engine, tmp_path, monkeypatch, blocking_binary
+):
+    """The hole the first version of this fix left open.
+
+    AI review finding (high), confirmed: bounding only `proc.wait()` leaves
+    `_prune_zfs_hourly` unbounded. It runs AFTER the transfer, still inside the
+    destination exclusion, the global semaphore and the source lock, and with
+    the run still in `_run_owners` — so the timeout does not cover it and the
+    watchdog deliberately will not reclaim it, because from the watchdog's
+    point of view the run is legitimately owned and executing.
+
+    A `zfs list` or `zfs destroy` that blocks — a suspended pool, an unresponsive
+    device — therefore reproduces the September incident exactly: a `running`
+    row that never terminalizes, holding its source's admission forever. The
+    fix would have bounded the part that hung in September while leaving a
+    neighbouring path that hangs the same way.
+
+    The ceiling must cover ALL of a run's work, not just its transfer.
+    """
+    monkeypatch.setattr(runner.settings, "run_timeout_seconds", 2)
+    task = make_syncoid_task(sqlite_engine, tmp_path)
+    with Session(sqlite_engine) as session:
+        stored = session.get(Task, task.id)
+        stored.prune_keep_hourly = 1
+        session.add(stored)
+        session.commit()
+
+    # syncoid exits cleanly and immediately; `zfs` is what hangs.
+    bin_dir = tmp_path / "prune-hang"
+    bin_dir.mkdir()
+    (bin_dir / "syncoid").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "syncoid").chmod(0o755)
+    (bin_dir / "zfs").write_text(
+        "#!/bin/sh\ni=0\nwhile [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done\nexit 0\n"
+    )
+    (bin_dir / "zfs").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/bin:/usr/bin")
+
+    admission = await runner.admit_run(task.id)
+    run_id = admission.accepted_run_id()
+    execution = runner.start_admitted_run(run_id)
+
+    try:
+        run = await wait_for_state(
+            sqlite_engine, run_id, (RunState.failed, RunState.success)
+        )
+        assert run.state == RunState.failed, (
+            "a run whose prune hung must be terminalized by the execution "
+            "timeout; leaving it `running` forever is the incident this "
+            "change exists to prevent, relocated one step later"
+        )
+        assert "timeout" in run.error_message.lower()
+        admitted = await runner.admit_run(task.id)
+        assert admitted.accepted, (
+            "the source must be schedulable again after a hung prune"
+        )
+    finally:
+        execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_normal_prune_still_runs_and_the_run_succeeds(
+    sqlite_engine, tmp_path, monkeypatch
+):
+    """The bound must not break pruning that works.
+
+    A deadline covering the prune is only correct if a prune that completes
+    inside it still runs to completion and still reports success.
+    """
+    monkeypatch.setattr(runner.settings, "run_timeout_seconds", 600)
+    task = make_syncoid_task(sqlite_engine, tmp_path)
+    with Session(sqlite_engine) as session:
+        stored = session.get(Task, task.id)
+        stored.prune_keep_hourly = 1
+        session.add(stored)
+        session.commit()
+        dataset = stored.local_path
+
+    bin_dir = tmp_path / "prune-ok"
+    bin_dir.mkdir()
+    calls = tmp_path / "zfs-calls"
+    (bin_dir / "syncoid").write_text("#!/bin/sh\nexit 0\n")
+    (bin_dir / "syncoid").chmod(0o755)
+    # Two hourly snapshots, keep 1 -> exactly one destroy.
+    (bin_dir / "zfs").write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> "{calls}"\n'
+        'if [ "$1" = "list" ]; then\n'
+        f'  echo "{dataset}@zfs-auto-snap_hourly-2026-09-01-0000"\n'
+        f'  echo "{dataset}@zfs-auto-snap_hourly-2026-09-01-0100"\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    (bin_dir / "zfs").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/bin:/usr/bin")
+
+    run_id = await runner.run_task(task.id)
+
+    with Session(sqlite_engine) as session:
+        run = session.get(Run, run_id)
+        assert run.state == RunState.success
+        assert run.error_message == ""
+    recorded = calls.read_text()
+    assert "list" in recorded
+    assert "destroy" in recorded, "the prune must still actually prune"
+
+
+@pytest.mark.asyncio
+async def test_a_pending_row_always_carries_a_start_timestamp(sqlite_engine):
+    """AI review finding (medium), checked and rejected — pinned so it stays so.
+
+    The review argued that `admit_run` creates pending rows with no
+    `started_at`, so the sweep's grace window is skipped and a fresh row is
+    reclaimed immediately. That is not what the model does: `Run.started_at` is
+    a non-optional field with `default_factory=utcnow`, so an admitted row
+    carries a timestamp from the moment it is committed.
+
+    The finding is wrong about today's code but names a real hazard about
+    tomorrow's: making `started_at` optional, or setting it only when execution
+    begins, would silently switch the grace window off and turn the watchdog
+    into a race against every run the system admits. This test is the guard on
+    that, stated at the level the sweep actually depends on.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    admission = await runner.admit_run(task.id)
+
+    with Session(sqlite_engine) as session:
+        run = session.get(Run, admission.accepted_run_id())
+        assert run.state == RunState.pending
+        assert run.started_at is not None, (
+            "the sweep's grace window keys on started_at; a pending row "
+            "without one would be reclaimed the instant it is admitted"
+        )
+
+
+@pytest.mark.asyncio
 async def test_the_watchdog_loop_sweeps_repeatedly_and_stops_cleanly(
     sqlite_engine, monkeypatch
 ):

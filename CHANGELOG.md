@@ -22,8 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Two independent gaps are closed.
 
   **A per-run execution timeout.** `PULLBACKUP_RUN_TIMEOUT_SECONDS` (default
-  `86400`, one day) bounds how long a single run may execute. On expiry the
-  run's whole process group is terminated through the same graceful
+  `86400`, one day) bounds how long a single run may execute. The ceiling
+  covers the whole run rather than each subprocess, so a Syncoid task that also
+  prunes snapshots shares one deadline across its transfer and its pruning and
+  can never spend its full ceiling twice. On expiry the run's whole process
+  group is terminated through the same graceful
   TERM → bounded wait → KILL path cancellation uses — so the ssh, or the
   `zfs send | zfs receive` pipeline, goes with it rather than being left
   running against the destination — and the run is recorded as **failed**, not
