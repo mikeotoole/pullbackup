@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Nothing yet.
+
+## [0.15.0] - 2026-09-11
+
 ### Added
 
 - Stop a run that is already in flight. Previously the only way to end a
