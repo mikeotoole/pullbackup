@@ -38,12 +38,23 @@ def sqlite_engine(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.settings, "http_basic_password", TEST_HTTP_PASSWORD)
     monkeypatch.setattr(runner, "_global_sem", asyncio.Semaphore(1))
     monkeypatch.setattr(runner, "_source_locks", {})
+    # Destination exclusion state (PR #45). Reset here as well as in
+    # test_run_concurrency's fixture, so a suite sharing this engine cannot
+    # inherit a held destination — or a condition bound to a dead loop — from
+    # an earlier test and then deadlock or refuse to rebind.
+    monkeypatch.setattr(runner, "_active_destinations", {})
+    monkeypatch.setattr(runner, "_destination_cv", None)
+    monkeypatch.setattr(runner, "_destination_cv_loop", None)
     monkeypatch.setattr(runner, "_admission_lock", asyncio.Lock())
     monkeypatch.setattr(runner, "_execution_tasks", set())
     # Per-run cancellation ownership. Reset with the rest of the runner's
     # process-global state so one test's execution can never be visible — or
     # cancellable — from another.
     monkeypatch.setattr(runner, "_run_owners", {})
+    # The watchdog handle. Reset with the rest of the runner's process-global
+    # state so a test that starts one can never leave a live sweep attached to
+    # a closed loop, reclaiming another test's rows.
+    monkeypatch.setattr(runner, "_watchdog", None)
     runner.settings.log_dir.mkdir()
     return engine
 

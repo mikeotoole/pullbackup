@@ -7,7 +7,7 @@ import re
 import signal
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -58,6 +58,10 @@ _execution_tasks: set[asyncio.Task[int]] = set()
 # them. A leaked entry would be an unbounded dict AND a stale handle a later
 # cancellation could act on.
 _run_owners: dict[int, "RunOwner"] = {}
+# The watchdog loop, when running. One per process; `start_watchdog` refuses to
+# create a second, because two sweeps racing on the same rows would each see
+# the other's half-finished terminalization.
+_watchdog: Optional[asyncio.Task[None]] = None
 log = logging.getLogger(__name__)
 _ZFS_DATASET = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9_.:%-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:%-]*)*"
@@ -86,6 +90,19 @@ class RunAdmission:
 
 class RunNotOwnedError(RuntimeError):
     """Execution was invoked for a row that it did not transition from pending."""
+
+
+class RunTimeout(RuntimeError):
+    """A run exceeded its configured execution ceiling and was killed.
+
+    Raised and handled entirely inside `_execute_run`. It exists as a distinct
+    type rather than a flag so the timeout path cannot be confused with a
+    cancellation: both terminate the same process group, but a timeout is a
+    FAILURE (nobody asked for it, and the backup did not happen) while a
+    cancellation is an operator decision. Recording a timeout as `cancelled`
+    would tell an operator scanning history that someone chose to stop a
+    transfer that actually wedged.
+    """
 
 
 class CancelOutcome(str, Enum):
@@ -501,9 +518,21 @@ def validate_ssh_user(user: str) -> str:
     return user
 
 
-async def _prune_zfs_hourly(dataset: str, keep: int, log_path: Path) -> None:
+async def _prune_zfs_hourly(
+    dataset: str, keep: int, log_path: Path, deadline: Optional[float] = None
+) -> None:
     """Keep the N newest zfs-auto-snap_hourly snapshots on `dataset`, destroy older ones.
-    Mirrors the user's syncoid script: anchored to `<dataset>@zfs-auto-snap_hourly-`."""
+    Mirrors the user's syncoid script: anchored to `<dataset>@zfs-auto-snap_hourly-`.
+
+    `deadline` is the run's absolute loop deadline, shared with the transfer.
+    It is not optional in practice: pruning runs AFTER the transfer but still
+    inside the destination exclusion, the concurrency permit, the source lock,
+    AND the ownership entry — so a `zfs list`/`zfs destroy` that blocks on a
+    suspended pool wedges the run exactly as the hung transfer did in
+    September, with the watchdog unable to help because the run is legitimately
+    owned. Found by review on the first version of this fix, which bounded only
+    the transfer.
+    """
     if keep < 1:
         raise ValueError("prune retention must be at least 1")
     dataset = validate_zfs_destination(dataset)
@@ -513,7 +542,7 @@ async def _prune_zfs_hourly(dataset: str, keep: int, log_path: Path) -> None:
         start_new_session=True,
     )
     try:
-        out, _ = await proc.communicate()
+        out, _ = await _communicate_bounded(proc, deadline)
     except asyncio.CancelledError:
         await _shield_process_cleanup(proc)
         raise
@@ -530,7 +559,7 @@ async def _prune_zfs_hourly(dataset: str, keep: int, log_path: Path) -> None:
                 start_new_session=True,
             )
             try:
-                o, _ = await p.communicate()
+                o, _ = await _communicate_bounded(p, deadline)
             except asyncio.CancelledError:
                 await _shield_process_cleanup(p)
                 raise
@@ -585,6 +614,93 @@ async def _shield_process_cleanup(proc: asyncio.subprocess.Process) -> None:
                 return
 
 
+def _run_deadline(timeout: int) -> Optional[float]:
+    """The absolute loop time by which a run must be finished, or None.
+
+    A single deadline for the whole run rather than a per-subprocess timeout.
+    Per-subprocess bounds would let a run with a transfer plus a prune take up
+    to twice its configured ceiling, and — worse — a prune with many `zfs
+    destroy` calls could take the ceiling EACH, which is unbounded again by
+    another name. What the operator configures is how long a run may take.
+    """
+    if timeout <= 0:
+        return None
+    return asyncio.get_running_loop().time() + timeout
+
+
+def _remaining(deadline: Optional[float]) -> Optional[float]:
+    """Seconds left before `deadline`, or None when unbounded. Never negative."""
+    if deadline is None:
+        return None
+    return max(0.0, deadline - asyncio.get_running_loop().time())
+
+
+async def _await_bounded(
+    proc: asyncio.subprocess.Process, deadline: Optional[float], timeout: int
+) -> int:
+    """Wait for `proc`, killing its process group if the run's deadline passes.
+
+    The missing ceiling from the 2026-09 incident. `proc.wait()` alone is
+    unbounded, and a subprocess stuck on a dead network path or a refused
+    `zfs receive` never returns — so the execution slot, and with it every
+    subsequent admission for that source, is held until somebody restarts the
+    application.
+
+    `deadline is None` restores the unbounded wait verbatim. Deliberately a
+    plain `proc.wait()` rather than `wait_for(..., timeout=None)` so there is
+    nothing between the caller and the pre-fix behaviour on that path.
+
+    On expiry the group is torn down through `_terminate_process_group` — the
+    same TERM -> 5s -> KILL escalation cancellation uses. There is exactly one
+    kill path in this module on purpose: a second one would inevitably drift,
+    and the failure mode of drift here is a timeout that reaps the direct child
+    while leaving the ssh, or the `zfs send | zfs receive` pipeline, running
+    against the destination.
+
+    Cancellation arriving DURING the bounded wait is re-raised untouched after
+    the same shielded cleanup the unbounded path used, so an operator cancel
+    and an application shutdown behave exactly as they did before.
+    """
+    remaining = _remaining(deadline)
+    if remaining is None:
+        return await proc.wait()
+    try:
+        return await asyncio.wait_for(proc.wait(), remaining)
+    except TimeoutError:
+        log.error(
+            "run subprocess exceeded the %ss execution timeout; terminating "
+            "its process group",
+            timeout,
+        )
+        await _shield_process_cleanup(proc)
+        raise RunTimeout(timeout) from None
+    except asyncio.CancelledError:
+        await _shield_process_cleanup(proc)
+        raise
+
+
+async def _communicate_bounded(
+    proc: asyncio.subprocess.Process, deadline: Optional[float]
+) -> tuple[bytes, Optional[bytes]]:
+    """`proc.communicate()` under the run's deadline, killing the group on expiry.
+
+    The prune path reads a subprocess's output rather than only waiting on it,
+    so it needs its own bounded form. Same deadline, same single kill path.
+    """
+    remaining = _remaining(deadline)
+    if remaining is None:
+        return await proc.communicate()
+    try:
+        return await asyncio.wait_for(proc.communicate(), remaining)
+    except TimeoutError:
+        log.error(
+            "run subprocess exceeded the execution deadline during pruning; "
+            "terminating its process group"
+        )
+        await _shield_process_cleanup(proc)
+        raise RunTimeout("prune") from None
+
+
 async def _execute_run(run_id: int) -> int:
     """Execute a run that was already admitted and return its id."""
     with Session(engine) as session:
@@ -634,9 +750,22 @@ async def _execute_run(run_id: int) -> int:
         # same root-relative no-follow traversal that produces the handed-to-rsync
         # descriptor; syncoid's target is a ZFS dataset `zfs receive` creates itself.
 
+        # Read once, here, rather than at each use. A run is bounded by the
+        # ceiling that was configured when it STARTED; a reload mid-transfer
+        # must not retroactively shorten a transfer that is already copying.
+        #
+        # ONE deadline for the whole run, not one per subprocess. The prune
+        # that follows a syncoid transfer shares it, so a run cannot spend its
+        # full ceiling on the transfer and then its full ceiling again on
+        # pruning — which would be the same unboundedness wearing a bound's
+        # clothing.
+        timeout = settings.run_timeout_seconds
+        deadline = _run_deadline(timeout)
+
         exit_code: Optional[int] = None
         proc: Optional[asyncio.subprocess.Process] = None
         cancellation: Optional[asyncio.CancelledError] = None
+        timed_out_after: Optional[int] = None
         try:
             # The destination descriptor is opened here and stays open across
             # `create_subprocess_exec`, because rsync dereferences /proc/self/fd/N
@@ -653,7 +782,21 @@ async def _execute_run(run_id: int) -> int:
                         start_new_session=True,
                         pass_fds=pass_fds,
                     )
-                    exit_code = await proc.wait()
+                    exit_code = await _await_bounded(proc, deadline, timeout)
+        except RunTimeout:
+            # The bound that did not exist during the 2026-09 incident. The
+            # subprocess group has already been terminated by `_await_bounded`,
+            # through the SAME TERM -> 5s -> KILL path a cancellation uses —
+            # there is deliberately only one kill path in this module, so a
+            # timeout cannot leave the ssh or the `zfs send | zfs receive`
+            # pipeline behind when a cancellation would not.
+            timed_out_after = timeout
+            with open(log_path, "ab") as logf:
+                logf.write(
+                    f"\n# runner timeout after {timeout}s; subprocess group "
+                    f"terminated\n".encode()
+                )
+            exit_code = -1
         except asyncio.CancelledError as exc:
             cancellation = exc
             if proc is not None:
@@ -669,7 +812,24 @@ async def _execute_run(run_id: int) -> int:
         # syncoid: optional snapshot prune on the destination dataset after a clean run
         if task.task_type == "syncoid" and exit_code == 0 and task.prune_keep_hourly:
             try:
-                await _prune_zfs_hourly(task.local_path, task.prune_keep_hourly, log_path)
+                await _prune_zfs_hourly(
+                    task.local_path, task.prune_keep_hourly, log_path, deadline
+                )
+            except RunTimeout:
+                # A hung prune is a wedge, not a cosmetic post-step failure.
+                # It holds the destination, the concurrency permit, the source
+                # lock and the ownership entry exactly as the transfer does, so
+                # swallowing it into the generic handler below would leave the
+                # run `success` while its resources stayed held — the September
+                # incident with a friendlier state name. The transfer DID
+                # succeed, but the run did not finish, so the run is failed.
+                timed_out_after = timeout
+                with open(log_path, "ab") as logf:
+                    logf.write(
+                        f"\n# runner timeout after {timeout}s during prune; "
+                        f"subprocess group terminated\n".encode()
+                    )
+                exit_code = -1
             except Exception as e:
                 with open(log_path, "ab") as logf:
                     logf.write(f"\n# prune error: {e}\n".encode())
@@ -694,6 +854,18 @@ async def _execute_run(run_id: int) -> int:
                 if _cancel_was_requested(run_id):
                     run.state = RunState.cancelled
                 run.error_message = "run cancelled"
+            elif timed_out_after is not None:
+                # `failed`, never `cancelled`: nobody asked for this and the
+                # backup did not happen. The bound is named in the message
+                # because the operator's next decision is exactly "was this a
+                # wedge, or is this transfer legitimately longer than the
+                # ceiling I configured" — and they cannot make it from a bare
+                # "timed out".
+                run.state = RunState.failed
+                run.error_message = (
+                    f"run exceeded the {timed_out_after}s execution timeout "
+                    f"and its process group was terminated"
+                )
             elif exit_code != 0:
                 run.error_message = f"rsync exited {exit_code}"
             session.add(run)
@@ -860,6 +1032,131 @@ def start_admitted_run(run_id: int) -> asyncio.Task[int]:
 
     execution.add_done_callback(execution_done)
     return execution
+
+
+# How long after a run's start the watchdog will consider it orphaned.
+#
+# The window exists because `admit_run` and `execute_run` are two steps and
+# there is a real gap between them: `start_admitted_run` schedules the
+# execution task, and ownership is registered when that task first gets the
+# loop. A sweep landing inside that window sees an active row with no owner —
+# which is also, exactly, the orphan signature. Without a grace period the
+# watchdog would be racing every run the system starts.
+#
+# Five minutes, which is enormous compared to the microseconds that gap
+# actually takes, because the cost of being wrong in the two directions is
+# wildly asymmetric: too short kills healthy runs at random, too long delays
+# reclaiming a wedge by a few minutes after it has already been wedged for
+# however long it took to notice. The incident ran four days.
+ORPHAN_GRACE_SECONDS = 300
+
+
+async def sweep_orphaned_runs() -> list[int]:
+    """Fail active rows this process is provably not executing. Returns their ids.
+
+    Gap 2 from the 2026-09 incident. A row stuck non-terminal blocks admission
+    for its whole source scope, so until something terminalizes it no backup
+    for that source can start. `reconcile_stale_runs` does exactly this job and
+    does it correctly — but only at startup, which is why clearing the incident
+    required a human running RestartStack. This is the same reconciliation as a
+    control loop.
+
+    The liveness signal is `_run_owners`, and deliberately nothing else:
+
+      * A **pid** is unsound in both directions. Pids are recycled, so "that
+        pid is alive" does not mean "that run is alive", and a run has no pid
+        at all until after its exec — so a pid-keyed sweep would kill every run
+        in the window before it spawns.
+      * **Elapsed time** cannot distinguish a wedge from a long transfer. The
+        production instance has legitimate multi-hour pulls; the execution
+        timeout is the setting that bounds those, with a ceiling an operator
+        chooses. Duration is not evidence of death.
+
+    An entry in `_run_owners` is written by `execute_run` itself and removed in
+    its `finally`, so there is no state in which a live execution is missing
+    from the map. Its absence, past the grace window, is proof.
+
+    Rows younger than `ORPHAN_GRACE_SECONDS` are left alone regardless: see
+    the constant for why.
+    """
+    cutoff = utcnow() - timedelta(seconds=ORPHAN_GRACE_SECONDS)
+    reclaimed: list[int] = []
+    with Session(engine) as session:
+        active = session.exec(
+            select(Run).where(Run.state.in_([RunState.pending, RunState.running]))
+        ).all()
+        for run in active:
+            if run.id in _run_owners:
+                continue
+            started_at = run.started_at
+            if started_at is not None:
+                # SQLite hands back naive datetimes; `utcnow()` is aware.
+                # Comparing the two raises rather than returning a wrong
+                # answer, which would take the watchdog down on its first
+                # sweep — so normalize before comparing.
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+                if started_at > cutoff:
+                    continue
+            run.state = RunState.failed
+            run.finished_at = utcnow()
+            run.exit_code = -1
+            run.error_message = (
+                "run reclaimed by the watchdog: no execution owns it in this "
+                "process, so it cannot be running"
+            )
+            session.add(run)
+            reclaimed.append(run.id)
+        if reclaimed:
+            session.commit()
+    if reclaimed:
+        log.error(
+            "watchdog reclaimed %s orphaned run(s): %s. Admission for their "
+            "sources was blocked until now.",
+            len(reclaimed),
+            ", ".join(str(run_id) for run_id in reclaimed),
+        )
+    return reclaimed
+
+
+async def _watchdog_loop() -> None:
+    """Sweep for orphaned runs forever, surviving a failing sweep.
+
+    A loop that dies on its first exception would leave the system in exactly
+    the state this guard exists to prevent, silently. A transient
+    `database is locked` must cost one sweep, not the watchdog.
+    """
+    while True:
+        try:
+            await asyncio.sleep(settings.watchdog_interval_seconds)
+            await sweep_orphaned_runs()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("watchdog sweep failed; continuing")
+
+
+def start_watchdog() -> asyncio.Task[None]:
+    """Start the orphaned-run watchdog, or return the one already running."""
+    global _watchdog
+    if _watchdog is not None and not _watchdog.done():
+        return _watchdog
+    _watchdog = asyncio.create_task(_watchdog_loop())
+    return _watchdog
+
+
+async def stop_watchdog() -> None:
+    """Cancel and await the watchdog, leaving no task behind."""
+    global _watchdog
+    watchdog = _watchdog
+    _watchdog = None
+    if watchdog is None:
+        return
+    watchdog.cancel()
+    try:
+        await watchdog
+    except asyncio.CancelledError:
+        pass
 
 
 async def shutdown_execution_tasks() -> None:
