@@ -31,7 +31,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = REPOSITORY_ROOT / "CHANGELOG.md"
 
-RELEASE_VERSION = "0.14.0"
+RELEASE_VERSION = "0.15.0"
 
 # sha256 of the stripped [Unreleased] body at the release base commit
 # d05ca934d931... -- the seeded local demo instance (Added); the custom SVG
