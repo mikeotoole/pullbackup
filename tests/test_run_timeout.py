@@ -38,6 +38,7 @@ means this process is provably not executing that row.
 """
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from pullbackup.config import ConfigurationError, Settings, load_settings
@@ -338,6 +339,99 @@ def test_a_non_positive_watchdog_interval_is_refused_at_startup():
     assert "WATCHDOG_INTERVAL_SECONDS" in str(error.value)
 
 
+def _env_example() -> str:
+    return (Path(__file__).resolve().parents[1] / ".env.example").read_text()
+
+
+def _documentation_for(name: str) -> str:
+    """The contiguous comment block immediately above `name=` in .env.example.
+
+    Asserting against the whole file is too weak to be worth writing: the file
+    already says "refused at startup" about the trusted-proxy setting and
+    "prunes" in passing, so a whole-file substring check passes on text that
+    has nothing to do with the knob under test. Both weaknesses were caught by
+    mutation (documenting the wrong thing still passed) before this existed.
+    """
+    lines = _env_example().splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith(f"{name}="):
+            continue
+        start = index
+        while start > 0 and lines[start - 1].startswith("#"):
+            start -= 1
+        assert start < index, f"{name} is documented by no comment at all"
+        return "\n".join(lines[start:index]).lower()
+    raise AssertionError(f"{name} does not appear in .env.example")
+
+
+def test_the_env_example_documents_the_run_timeout():
+    """Review finding (t_646c4928): the bundled .env.example stopped after
+    PULLBACKUP_MAX_CONCURRENT_RUNS, so an operator copying it as the starting
+    template saw no sign that either knob from this change exists.
+
+    That matters more here than for a typical setting. The whole point of the
+    incident was that nothing was visible: the ceiling is what stops four days
+    of silence, and an operator whose initial replication legitimately exceeds
+    a day needs to know `0` is the escape hatch BEFORE the ceiling kills a
+    week-long seed transfer. Documenting only in README/compose leaves the file
+    people actually copy silent about it.
+
+    Pinned against the constant rather than a literal so a default change that
+    forgets the docs fails here instead of shipping a lie.
+    """
+    from pullbackup.config import DEFAULT_RUN_TIMEOUT_SECONDS
+
+    assert (
+        f"PULLBACKUP_RUN_TIMEOUT_SECONDS={DEFAULT_RUN_TIMEOUT_SECONDS}"
+        in _env_example()
+    ), (
+        "the .env.example operators copy does not document the run ceiling, or "
+        "documents a value the loader no longer defaults to"
+    )
+
+    # The three facts an operator cannot recover from the value alone.
+    documentation = _documentation_for("PULLBACKUP_RUN_TIMEOUT_SECONDS")
+    assert "pruning" in documentation, (
+        "one deadline spans transfer AND post-transfer pruning; an operator who "
+        "assumes it is per-subprocess will size the ceiling at half what a "
+        "syncoid-plus-prune run actually needs"
+    )
+    assert '"0" waits forever' in documentation, (
+        "the unbounded escape hatch is undocumented, so the only way out of a "
+        "ceiling that is too low for a seed transfer is reading the source"
+    )
+    assert "refused at startup" in documentation and "clamp" in documentation, (
+        "a negative value is refused at startup, not clamped; undocumented, "
+        "that reads as the app failing to boot for no stated reason"
+    )
+
+
+def test_the_env_example_documents_the_watchdog_interval():
+    """Same finding, second knob.
+
+    The watchdog is the only thing that releases a row stranded by a crashed
+    execution without a container restart, so its cadence is the operator's
+    upper bound on how long a source stays wedged. Below 1 being refused (a
+    busy loop, not "off") is the non-obvious half.
+    """
+    from pullbackup.config import (
+        DEFAULT_WATCHDOG_INTERVAL_SECONDS,
+        MIN_WATCHDOG_INTERVAL_SECONDS,
+    )
+
+    assert (
+        f"PULLBACKUP_WATCHDOG_INTERVAL_SECONDS={DEFAULT_WATCHDOG_INTERVAL_SECONDS}"
+        in _env_example()
+    ), "the bundled template does not document the watchdog cadence"
+
+    documentation = _documentation_for("PULLBACKUP_WATCHDOG_INTERVAL_SECONDS")
+    assert f"below {MIN_WATCHDOG_INTERVAL_SECONDS} is refused" in documentation, (
+        f"that a value below {MIN_WATCHDOG_INTERVAL_SECONDS} is refused is "
+        "undocumented, so an operator trying to switch the watchdog off with 0 "
+        "gets a startup failure with no warning it was coming"
+    )
+
+
 # --------------------------------------------------------------------------
 # 3. the dead-execution watchdog
 # --------------------------------------------------------------------------
@@ -628,6 +722,92 @@ async def test_a_hung_post_transfer_prune_is_bounded_too(
         assert admitted.accepted, (
             "the source must be schedulable again after a hung prune"
         )
+    finally:
+        execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_the_transfer_and_the_prune_share_one_deadline(
+    sqlite_engine, tmp_path, monkeypatch, blocking_binary
+):
+    """The measurement the test above cannot make.
+
+    Reviewer suggestion (t_646c4928, non-blocking): in the hung-prune test the
+    transfer exits instantly, so the prune gets the whole ceiling to itself.
+    Per-phase deadlines — a fresh ceiling handed to each subprocess — pass that
+    test just as well as a single run-wide one. It proves the prune is bounded;
+    it cannot prove the bound is *shared*.
+
+    That distinction is the September failure mode in miniature. Under per-phase
+    deadlines a syncoid task that also prunes can occupy its source for two
+    ceilings, and a task with more phases for more still, so the configured
+    value stops being the operator's worst case — exactly the "how long can this
+    possibly hold the slot" question the ceiling exists to answer.
+
+    So: burn most of the ceiling in the transfer, then hang in the prune, and
+    assert on ELAPSED. One shared deadline terminalizes at roughly the ceiling.
+    Per-phase deadlines cannot finish before transfer + ceiling, which is past
+    the bound asserted here.
+    """
+    ceiling = 3.0
+    transfer = 2.0
+    monkeypatch.setattr(runner.settings, "run_timeout_seconds", ceiling)
+    task = make_syncoid_task(sqlite_engine, tmp_path)
+    with Session(sqlite_engine) as session:
+        stored = session.get(Task, task.id)
+        stored.prune_keep_hourly = 1
+        session.add(stored)
+        session.commit()
+
+    bin_dir = tmp_path / "shared-deadline"
+    bin_dir.mkdir()
+    # Transfer succeeds, but only after eating most of the ceiling.
+    (bin_dir / "syncoid").write_text(f"#!/bin/sh\nsleep {transfer}\nexit 0\n")
+    (bin_dir / "syncoid").chmod(0o755)
+    # Then the prune hangs, the way a `zfs destroy` on a suspended pool does.
+    (bin_dir / "zfs").write_text(
+        "#!/bin/sh\ni=0\nwhile [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done\nexit 0\n"
+    )
+    (bin_dir / "zfs").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/bin:/usr/bin")
+
+    admission = await runner.admit_run(task.id)
+    run_id = admission.accepted_run_id()
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    execution = runner.start_admitted_run(run_id)
+
+    try:
+        run = await wait_for_state(
+            sqlite_engine, run_id, (RunState.failed, RunState.success)
+        )
+        elapsed = loop.time() - started
+
+        assert run.state == RunState.failed
+        assert "timeout" in run.error_message.lower()
+
+        # The whole point. Slack covers process spawn plus the terminate
+        # escalation; it stays well under transfer + ceiling (5.0s), which is
+        # the earliest a per-phase implementation could possibly land here.
+        assert elapsed < ceiling + 1.5, (
+            f"the run took {elapsed:.2f}s to terminalize against a {ceiling}s "
+            f"ceiling after a {transfer}s transfer — the prune was given its "
+            "own fresh deadline instead of inheriting the run's remaining "
+            "time, so a task's real worst-case hold is a multiple of the "
+            "configured ceiling rather than the ceiling itself"
+        )
+        # And it did have to wait for the transfer: a run that died at spawn
+        # would also satisfy the bound above, for the wrong reason.
+        assert elapsed >= transfer, (
+            f"terminalized in {elapsed:.2f}s, before the {transfer}s transfer "
+            "could have finished — this run never reached the prune, so it "
+            "measures nothing about a shared deadline"
+        )
+
+        admitted = await runner.admit_run(task.id)
+        assert admitted.accepted
     finally:
         execution.cancel()
         await asyncio.gather(execution, return_exceptions=True)
