@@ -284,6 +284,58 @@ describe("stopping a running run", () => {
   });
 });
 
+describe("starting a run now", () => {
+  it("surfaces the API's 409 refusal with its source scope", async () => {
+    const detail = "409 a run is already pending or running for this source";
+    vi.spyOn(api, "runTask").mockRejectedValue(new Error(detail));
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = tasksList([task({ last_run_state: "running" })]);
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+    });
+    await settle();
+
+    expect(alerted).toHaveBeenCalledTimes(1);
+    expect(String(alerted.mock.calls[0][0])).toContain(detail);
+  });
+
+  it("does not show an error when the run request succeeds", async () => {
+    vi.spyOn(api, "runTask").mockResolvedValue({ queued: true });
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = tasksList([task()]);
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+    });
+    await settle();
+
+    expect(alerted).not.toHaveBeenCalled();
+  });
+
+  it("does not show a late refusal after the operator navigates away", async () => {
+    let rejectRun;
+    vi.spyOn(api, "runTask").mockImplementation(() => new Promise((_, reject) => {
+      rejectRun = reject;
+    }));
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = tasksList([task()]);
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+    });
+    const root = roots.pop();
+    const mountedHost = hosts.pop();
+    act(() => root.unmount());
+    mountedHost.remove();
+
+    rejectRun(new Error("409 a run is already pending or running for this task"));
+    await settle();
+
+    expect(alerted).not.toHaveBeenCalled();
+  });
+});
+
 describe("toggling a task while it runs", () => {
   it("sends only the enabled change and never touches the run", async () => {
     // The backend permits this now; the UI must not accompany it with a cancel.
