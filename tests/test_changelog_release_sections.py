@@ -31,15 +31,17 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = REPOSITORY_ROOT / "CHANGELOG.md"
 
-RELEASE_VERSION = "0.14.0"
+RELEASE_VERSION = "0.15.0"
 
 # sha256 of the stripped [Unreleased] body at the release base commit
-# d05ca934d931... -- the seeded local demo instance (Added); the custom SVG
-# icon set, the D4 layers app icon and the matching in-app BrandMark (Changed);
-# and the suppressed native Basic-auth dialog (Fixed). This is the content
-# 0.14.0 releases.
+# 33a6d7ae52bb -- stopping a run in flight and editing a task while it runs
+# (Added); sortable task columns remembered per browser (Added); and the
+# silent run-now refusal made visible (Fixed). This is the content 0.15.0
+# releases, including the two entries added deliberately in the release
+# commit because the sorting and run-now PRs shipped without changelog
+# bullets of their own.
 UNRELEASED_BODY_AT_BASE_SHA256 = (
-    "175c7067679217133bf7b422007ea9c9ed658b2ec3cd6feb7f05288e7a56a4d9"
+    "c4c0f96da4b628d6f4e7a145b9d2915a92c5f2e490d3f25df85f2a0a2107bf60"
 )
 
 HEADING = re.compile(r"^## \[([^\]]+)\](?: - (\d{4}-\d{2}-\d{2}))?\s*$", re.M)
@@ -84,33 +86,42 @@ def test_the_release_section_preserves_the_unreleased_body_verbatim():
 def test_the_release_section_still_names_what_shipped():
     """A digest tells you *that* something changed, not *what* is missing.
 
-    These are the substance of 0.13.0, so they are named explicitly: a future
+    These are the substance of 0.15.0, so they are named explicitly: a future
     rewrite that drops one gets a readable failure rather than a hex mismatch.
 
-    Each release retargets this test to its own contents. 0.13.1 named the
-    filter-chip casing fix; 0.14.0 ships three user-visible things, so it names
-    all three. The digest above still pins the body byte-for-byte -- this is
-    the readable half of the same guard, not a second, weaker one.
+    Each release retargets this test to its own contents. 0.15.0 ships three
+    user-visible things -- stopping a running job, sortable columns, and a
+    run-now refusal that is no longer silent -- so it names all three. The
+    digest above still pins the body byte-for-byte -- this is the readable
+    half of the same guard, not a second, weaker one.
     """
     body = _body(RELEASE_VERSION)
-    # Added: the seeded demo instance. The loopback binding is the security
-    # property that made it publishable at all -- an entry that drops it would
-    # read as if `-p 18080:8000` had been acceptable.
-    assert "scripts/seed-demo.py" in body
-    assert "loopback" in body
-    # Changed: the icon work, both halves. The in-app mark is a separate
-    # sentence because shipping only the served asset would have split the
-    # brand in two, which is the non-obvious part.
-    assert "`frontend/src/components/icons/`" in body
-    assert "BrandMark" in body
-    # Fixed: the root cause, not the symptom. A browser pops its own dialog for
-    # WWW-Authenticate even on a same-origin fetch(); lose that and the entry
-    # reads as if the 401 itself were wrong.
-    assert "WWW-Authenticate" in body
-    assert "Sec-Fetch-Mode" in body
+    # Added: stopping a run in flight. The process-group kill is the property
+    # that makes Stop real -- an entry that drops it would read as if a
+    # mere signal to rsync were enough to end a transfer.
+    assert "/api/runs/{id}/cancel" in body
+    assert "process group" in body
+    # The honesty half of cancellation: 504 still-running and a natural
+    # finish are different outcomes, and conflating them is the bug class
+    # the review cycle caught.
+    assert "504" in body
+    assert "already finished" in body
+    # Added: sorting. It is a browser-local display preference; an entry
+    # that calls it an account setting misdescribes where it is kept.
+    assert "sortable" in body
+    assert "local storage" in body
+    # Added: editing while a run is active. The lock is on CHANGED values,
+    # which is the non-obvious part -- a full-form PATCH must still pass.
+    assert "names each" in body
+    assert "full-task PATCH" in body
+    # Fixed: the silent run-now refusal. The overlap fix is named because
+    # a single-request test would pass while the dropped-callback race
+    # survived.
+    assert "overlapping" in body
     assert "### Added" in body
     assert "### Changed" in body
     assert "### Fixed" in body
+    assert "### Removed" in body
 
 
 # --------------------------------------------------------------------------
