@@ -34,7 +34,10 @@ services:
       PULLBACKUP_DEST_ROOTS: /mnt/dest/backups
       # Only needed for syncoid (ZFS) tasks. Leave blank to disable them.
       PULLBACKUP_ZFS_DEST_ROOTS: ""
-      PULLBACKUP_MAX_CONCURRENT_RUNS: "1"
+      # Bounded parallelism. Two runs writing the same destination still
+      # serialize regardless of this value; set it to "1" for strictly one
+      # transfer at a time. Below 1 is refused at startup.
+      PULLBACKUP_MAX_CONCURRENT_RUNS: "3"
       # Required. The password must be at least 32 characters.
       # The UI signs in with these at /login and then uses a session cookie;
       # the same values keep working as HTTP Basic for scripted access and for

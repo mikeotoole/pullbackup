@@ -7,7 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- Nothing yet.
+### Fixed
+
+- One long backup no longer stops every other backup. A single global
+  concurrency slot was held for the whole duration of a transfer, so while a
+  large archive pull was running, every other task was admitted, written
+  `pending`, and then waited — observed on a production instance as six hours
+  with zero runs across nineteen enabled tasks, with nothing reported anywhere.
+  The scheduler was firing correctly the entire time; the block was downstream,
+  in execution. A backup system that quietly stops backing up is the worst
+  failure shape it has, so the default is no longer the value that produces it:
+  `PULLBACKUP_MAX_CONCURRENT_RUNS` now defaults to `3`.
+
+  Raising the limit is only safe because destination exclusion is now enforced
+  separately and always. Two tasks writing the same directory still serialize,
+  as does a task writing a subdirectory of another's destination, and two
+  Syncoid replications into the same ZFS dataset or one of its descendants.
+  Exclusion is by containment rather than by string equality, so `/dest/photos`
+  blocks `/dest/photos/raw` while leaving `/dest/photos-old` free, and rsync
+  destinations are canonicalized first so two rows spelling one directory
+  differently cannot slip past each other. A run whose destination is busy
+  waits and starts when it frees — it is never skipped. Runs from the same
+  source remain serialized exactly as before.
+
+  A value below `1` is now refused at startup with a `ConfigurationError` that
+  names the variable and the minimum, rather than being accepted: with no slots
+  every run is admitted and then waits forever, which is the same silent stop
+  arrived at through configuration. Setting `1` deliberately is still supported
+  for a deployment that wants strictly one transfer at a time.
 
 ## [0.15.0] - 2026-09-11
 
