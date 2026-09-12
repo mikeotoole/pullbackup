@@ -43,7 +43,8 @@ import pytest
 from pullbackup.config import ConfigurationError, Settings, load_settings
 from pullbackup.models import Run, RunState, Task, utcnow
 from pullbackup.services import runner
-from sqlmodel import Session
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, update
 
 # Shared engine fixture and row factories.
 from test_run_admission import (  # noqa: F401
@@ -705,6 +706,99 @@ async def test_a_pending_row_always_carries_a_start_timestamp(sqlite_engine):
             "the sweep's grace window keys on started_at; a pending row "
             "without one would be reclaimed the instant it is admitted"
         )
+
+
+@pytest.mark.asyncio
+async def test_the_column_itself_forbids_a_pending_row_without_a_timestamp(
+    sqlite_engine,
+):
+    """The grace window's precondition is enforced by the schema, not by care.
+
+    The test above pins what `admit_run` does. This one pins that no other
+    writer — a future code path, a migration, a hand-run UPDATE during an
+    incident — can produce the row shape the review was worried about. The
+    column is NOT NULL, so `started_at = None` is refused by the database
+    rather than silently disabling the watchdog's grace window.
+
+    Stated at the storage layer deliberately: an ORM-level default can be
+    bypassed by constructing a row differently, a NOT NULL constraint cannot.
+    """
+    assert Run.__table__.columns["started_at"].nullable is False
+
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    admission = await runner.admit_run(task.id)
+    run_id = admission.accepted_run_id()
+
+    with Session(sqlite_engine) as session:
+        with pytest.raises(IntegrityError):
+            session.exec(
+                update(Run).where(Run.id == run_id).values(started_at=None)
+            )
+            session.commit()
+
+
+@pytest.mark.asyncio
+async def test_a_freshly_admitted_pending_row_survives_a_sweep(sqlite_engine):
+    """The behavioural statement of the grace window, for pending rows.
+
+    The previous two tests pin the row shape the sweep depends on. This one
+    asserts the outcome that actually matters, through `sweep_orphaned_runs`
+    itself: a run that has been admitted but has not yet reached `execute_run`
+    — so it is genuinely absent from `_run_owners`, the orphan signature — is
+    NOT reclaimed while it is younger than the grace window.
+
+    This is the admission->ownership-registration window the sweep's docstring
+    describes. If it were unprotected, the watchdog would fail a healthy run
+    every time a sweep landed between `admit_run` and the execution task first
+    getting the loop, and the symptom would be indistinguishable from the
+    incident this card exists to fix.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    admission = await runner.admit_run(task.id)
+    run_id = admission.accepted_run_id()
+    assert run_id not in runner._run_owners, (
+        "the premise of this test is an unowned row; if it is owned, the "
+        "sweep skips it for a different reason and nothing is proven"
+    )
+
+    reclaimed = await runner.sweep_orphaned_runs()
+
+    assert reclaimed == [], "a just-admitted pending row must not be reclaimed"
+    with Session(sqlite_engine) as session:
+        assert session.get(Run, run_id).state == RunState.pending
+
+
+@pytest.mark.asyncio
+async def test_an_aged_pending_row_is_still_reclaimed(sqlite_engine):
+    """The grace window must delay the sweep, not defeat it.
+
+    The counterpart to the test above, and the reason it is not vacuous: a
+    pending row that nothing owns and that is older than the grace window is
+    exactly the stranded-PENDING half of the incident, and it still blocks
+    admission for its whole source scope. It has to be reclaimed.
+
+    Without this pairing, "spare young pending rows" could be implemented as
+    "never touch pending rows" and the young-row test would still pass.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    admission = await runner.admit_run(task.id)
+    run_id = admission.accepted_run_id()
+    age_run(sqlite_engine, run_id, runner.ORPHAN_GRACE_SECONDS + 60)
+
+    reclaimed = await runner.sweep_orphaned_runs()
+
+    assert reclaimed == [run_id]
+    with Session(sqlite_engine) as session:
+        run = session.get(Run, run_id)
+        assert run.state == RunState.failed
+        assert "watchdog" in run.error_message
+
+    # The point of reclaiming it: the source scope is admitting again.
+    second = await runner.admit_run(task.id)
+    assert second.accepted, (
+        "reclaiming the stranded row must unblock admission for its source; "
+        "that is the whole purpose of the sweep"
+    )
 
 
 @pytest.mark.asyncio
