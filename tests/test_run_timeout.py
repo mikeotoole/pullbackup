@@ -472,6 +472,104 @@ async def test_the_watchdog_leaves_terminal_rows_alone(sqlite_engine):
 
 
 @pytest.mark.asyncio
+async def test_the_watchdog_leaves_a_run_waiting_on_a_busy_destination_alone(
+    sqlite_engine, monkeypatch, blocking_binary
+):
+    """The nastiest false positive this watchdog could have, pinned.
+
+    PR #45 made destination exclusion a WAIT rather than a skip: a run whose
+    destination is busy stays admitted and starts when it frees. Such a run
+    sits at `pending` for as long as the run ahead of it takes — hours, on this
+    deployment — which is also, precisely, the orphan signature the watchdog
+    hunts for. Reclaiming it would silently reintroduce the skipped-backup
+    behaviour #45 removed, and it would do so exactly on the shared-destination
+    tasks that are most likely to matter.
+
+    It is safe only because `execute_run` registers ownership BEFORE
+    `_execute_run` waits on anything. That ordering is the whole guarantee, so
+    it is asserted directly below rather than waited for: a build that
+    registered ownership after the destination wait would leave a legitimately
+    blocked run unowned for the entire duration of the run ahead of it, and the
+    sweep would reclaim it.
+    """
+    monkeypatch.setattr(runner, "_global_sem", asyncio.Semaphore(4))
+    first, second = create_source_tasks(sqlite_engine, count=2)
+    # Different SOURCES, same DESTINATION. Both halves matter: same-source runs
+    # are refused at admission (`source_active`) and would never reach the
+    # destination wait at all, so a test that shared the source would prove
+    # nothing about the watchdog.
+    with Session(sqlite_engine) as session:
+        blocker = session.get(Task, first.id)
+        waiter = session.get(Task, second.id)
+        other_source = runner.Source(
+            name="second-source",
+            user="backup",
+            host="second.example",
+            ssh_key_path="/tmp/test-key",
+        )
+        session.add(other_source)
+        session.commit()
+        session.refresh(other_source)
+        waiter.source_id = other_source.id
+        waiter.local_path = blocker.local_path
+        session.add(waiter)
+        session.commit()
+
+    release_file, _ = blocking_binary("rsync", "destination-wait-rsync")
+    first_run, first_exec, first_captured = await start_blocking_run(
+        sqlite_engine, first.id, monkeypatch
+    )
+
+    second_admission = await runner.admit_run(second.id)
+    second_run = second_admission.accepted_run_id()
+    second_exec = runner.start_admitted_run(second_run)
+
+    # Wait for a signal INDEPENDENT of ownership — the first run holding the
+    # destination while the second has not claimed it — so the assertion below
+    # is a real measurement of the ordering rather than a wait for the thing it
+    # is about to assert.
+    for _ in range(500):
+        if first_run in runner._active_destinations and (
+            second_run not in runner._active_destinations
+        ):
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.2)
+
+    try:
+        # It is correctly blocked on the destination, not running.
+        with Session(sqlite_engine) as session:
+            assert session.get(Run, second_run).state == RunState.pending
+        assert second_run in runner._run_owners, (
+            "a run waiting for a busy destination must already be owned; "
+            "registering ownership only after the wait leaves it "
+            "indistinguishable from an orphan for the whole wait"
+        )
+
+        age_run(sqlite_engine, second_run, runner.ORPHAN_GRACE_SECONDS + 3600)
+        reclaimed = await runner.sweep_orphaned_runs()
+        assert reclaimed == [], (
+            "the watchdog reclaimed a run that is correctly waiting for a busy "
+            "destination; that turns the wait PR #45 introduced back into the "
+            "skipped backup it replaced"
+        )
+        with Session(sqlite_engine) as session:
+            assert session.get(Run, second_run).state == RunState.pending
+    finally:
+        release_file.touch()
+        await asyncio.gather(first_exec, second_exec, return_exceptions=True)
+        process = first_captured.get("process")
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+
+    # And it really did get its turn afterwards, rather than being stranded.
+    with Session(sqlite_engine) as session:
+        assert session.get(Run, first_run).state == RunState.success
+        assert session.get(Run, second_run).state == RunState.success
+
+
+@pytest.mark.asyncio
 async def test_the_watchdog_loop_sweeps_repeatedly_and_stops_cleanly(
     sqlite_engine, monkeypatch
 ):
