@@ -500,6 +500,66 @@ async def test_the_same_directory_spelled_differently_still_serializes(
         await settle(executions, release_file)
 
 
+def test_a_held_destination_is_never_forgotten_on_a_loop_change(monkeypatch):
+    """Rebinding must refuse while a destination is held, not clear it.
+
+    Review finding on PR #45: the first version rebound on loop identity alone
+    and cleared `_active_destinations` with it, reasoning that entries under a
+    previous loop must belong to finished runs. That is an assumption, not a
+    fact. With two loops live in one process it forgets a RUNNING holder, and
+    the next run acquires the overlapping destination unopposed — the exact
+    concurrent-writer case this exclusion exists to prevent.
+
+    Refusing costs one run and says why. Guessing costs a destination.
+    """
+    monkeypatch.setattr(runner, "_destination_cv", None)
+    monkeypatch.setattr(runner, "_destination_cv_loop", None)
+    monkeypatch.setattr(runner, "_active_destinations", {})
+
+    async def bind():
+        runner._destination_condition()
+
+    asyncio.run(bind())
+    bound_to = runner._destination_cv
+
+    # A run on the now-finished loop is still recorded as holding a
+    # destination. A second loop must not be allowed to ignore it.
+    runner._active_destinations[1] = ("fs", "/", "dest", "shared")
+
+    async def rebind():
+        runner._destination_condition()
+
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(rebind())
+
+    assert "different event loop" in str(raised.value)
+    assert runner._active_destinations == {1: ("fs", "/", "dest", "shared")}, (
+        "the held destination was dropped despite the refusal"
+    )
+    assert runner._destination_cv is bound_to, (
+        "the condition was rebound despite the refusal"
+    )
+
+
+def test_a_fresh_loop_binds_cleanly_when_nothing_is_held(monkeypatch):
+    """The refusal must not break the ordinary case it guards.
+
+    With no destination held there is no holder to forget, so a new loop binds
+    without complaint. Paired with the test above so a uniformly-raising
+    implementation cannot satisfy the guard vacuously.
+    """
+    monkeypatch.setattr(runner, "_destination_cv", None)
+    monkeypatch.setattr(runner, "_destination_cv_loop", None)
+    monkeypatch.setattr(runner, "_active_destinations", {})
+
+    async def bind():
+        return runner._destination_condition()
+
+    first = asyncio.run(bind())
+    second = asyncio.run(bind())
+    assert first is not second, "a stale condition was reused on a new loop"
+
+
 def test_the_default_concurrency_no_longer_serializes_everything():
     """The shipped default must let more than one backup run at a time.
 

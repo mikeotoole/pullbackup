@@ -255,18 +255,36 @@ def _conflicts(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
 
 
 def _destination_condition() -> asyncio.Condition:
-    """Return the destination condition for the running loop, rebinding if needed.
+    """Return the destination condition for the running loop.
 
-    Rebinding drops `_active_destinations` with it: entries recorded under a
-    dead loop describe runs that cannot still be executing, and carrying them
-    forward would block their destinations permanently.
+    The supported deployment is a single Uvicorn event loop, so a loop change
+    means either a fresh loop after the previous one is gone (tests, an
+    in-process restart) or a second loop running concurrently — and those two
+    are NOT interchangeable here.
+
+    Rebinding is therefore allowed only when no destination is currently held.
+    An empty map proves there is no holder to forget. If entries exist, some
+    run believes it owns a destination and this code cannot tell whether that
+    run is finished or still copying bytes, so it refuses rather than guesses:
+    clearing the map on loop identity alone would drop a live holder and let an
+    overlapping writer straight through, which is the corruption this exclusion
+    exists to prevent. Failing loudly costs one run; guessing wrong costs a
+    destination.
     """
     global _destination_cv, _destination_cv_loop
     loop = asyncio.get_running_loop()
-    if _destination_cv is None or _destination_cv_loop is not loop:
-        _destination_cv = asyncio.Condition()
-        _destination_cv_loop = loop
-        _active_destinations.clear()
+    if _destination_cv is not None and _destination_cv_loop is loop:
+        return _destination_cv
+    if _active_destinations:
+        raise RuntimeError(
+            "destination exclusion cannot be rebound to a different event loop "
+            f"while {len(_active_destinations)} destination(s) are held. "
+            "Forgetting them would allow two runs to write the same "
+            "destination concurrently. This process is expected to run a "
+            "single event loop."
+        )
+    _destination_cv = asyncio.Condition()
+    _destination_cv_loop = loop
     return _destination_cv
 
 
