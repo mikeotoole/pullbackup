@@ -285,14 +285,17 @@ describe("stopping a running run", () => {
 });
 
 describe("starting a run now", () => {
-  it("surfaces the API's 409 refusal with its source scope", async () => {
-    const detail = "409 a run is already pending or running for this source";
+  it.each([
+    ["desktop", 0, "source"],
+    ["phone", 1, "task"],
+  ])("surfaces the API's 409 refusal on %s with its %s scope", async (_layout, buttonIndex, scope) => {
+    const detail = `409 a run is already pending or running for this ${scope}`;
     vi.spyOn(api, "runTask").mockRejectedValue(new Error(detail));
     const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
     const { host } = tasksList([task({ last_run_state: "running" })]);
 
     await act(async () => {
-      byName(host, "Run now")[0].click();
+      byName(host, "Run now")[buttonIndex].click();
     });
     await settle();
 

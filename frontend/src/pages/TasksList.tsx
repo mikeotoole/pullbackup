@@ -105,6 +105,12 @@ export function TasksList() {
       qc.invalidateQueries({ queryKey: ["tasks"] });
     },
   });
+  const requestRun = (id: number) => runNow.mutate(id, {
+    // A per-call callback belongs to this mounted observer. Unlike a mutation-
+    // level callback, react-query drops it when navigation unmounts this list,
+    // so a late refusal cannot interrupt the operator on another screen.
+    onError: (e) => alert(`Could not start the run: ${String((e as Error).message)}`),
+  });
   const stopRun = useMutation({
     mutationFn: (runId: number) => api.cancelRun(runId),
     onSuccess: () => {
@@ -192,7 +198,7 @@ export function TasksList() {
                   {t.kuma_monitor_id && sys?.kuma_url && (
                     <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="inline-block w-7 text-center text-muted hover:text-white"><BellIcon className="inline-block w-4 h-4 align-middle" /></a>
                   )}
-                  <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white"><PlayIcon className="inline-block w-4 h-4 align-middle" /></button>
+                  <button title="run now" aria-label="Run now" onClick={() => requestRun(t.id)} className="inline-block w-7 text-center text-muted hover:text-white"><PlayIcon className="inline-block w-4 h-4 align-middle" /></button>
                   {isStoppable(t) && (
                     <button title="stop the running run" aria-label="Stop run" onClick={() => confirm(`Stop the running ${typeLabel(t)} run for ${t.name}?`) && stopRun.mutate(t.last_run_id!)} className="inline-block w-7 text-center text-muted hover:text-danger"><StopIcon className="inline-block w-4 h-4 align-middle" /></button>
                   )}
@@ -260,7 +266,7 @@ export function TasksList() {
                 {t.kuma_monitor_id && sys?.kuma_url && (
                   <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><BellIcon className="w-5 h-5" /></a>
                 )}
-                <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><PlayIcon className="w-5 h-5" /></button>
+                <button title="run now" aria-label="Run now" onClick={() => requestRun(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><PlayIcon className="w-5 h-5" /></button>
                 {isStoppable(t) && (
                   <button title="stop the running run" aria-label="Stop run" onClick={() => confirm(`Stop the running ${typeLabel(t)} run for ${t.name}?`) && stopRun.mutate(t.last_run_id!)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger"><StopIcon className="w-5 h-5" /></button>
                 )}
