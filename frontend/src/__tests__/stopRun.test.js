@@ -316,6 +316,34 @@ describe("starting a run now", () => {
     expect(alerted).not.toHaveBeenCalled();
   });
 
+  it("reports an earlier 409 when an overlapping later request succeeds first", async () => {
+    let rejectFirst;
+    let resolveSecond;
+    vi.spyOn(api, "runTask")
+      .mockImplementationOnce(() => new Promise((_, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveSecond = resolve;
+      }));
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host, qc } = tasksList([task({ last_run_state: "running" })]);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+      byName(host, "Run now")[1].click();
+    });
+    resolveSecond({ queued: true });
+    await settle();
+    rejectFirst(new Error("409 a run is already pending or running for this source"));
+    await settle();
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tasks"] });
+    expect(alerted).toHaveBeenCalledTimes(1);
+    expect(String(alerted.mock.calls[0][0])).toContain("for this source");
+  });
+
   it("does not show a late refusal after the operator navigates away", async () => {
     let rejectRun;
     vi.spyOn(api, "runTask").mockImplementation(() => new Promise((_, reject) => {
