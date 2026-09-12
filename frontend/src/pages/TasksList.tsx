@@ -66,8 +66,12 @@ function SortHeader({
 export function TasksList() {
   const qc = useQueryClient();
   const mounted = useRef(true);
-  useEffect(() => () => {
-    mounted.current = false;
+  useEffect(() => {
+    // StrictMode replays setup → cleanup → setup in development.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
   }, []);
   const { data: tasks = [] } = useQuery({
     queryKey: ["tasks"],
