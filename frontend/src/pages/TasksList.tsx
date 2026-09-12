@@ -8,6 +8,7 @@ import { lastRunTime, relTime } from "../lib/relativeTime";
 import { nextSort, sortTasks, type SortColumn, type SortPreference } from "../lib/taskSort";
 import { loadSort, saveSort } from "../lib/taskSortStorage";
 import { StatusPill } from "../components/StatusPill";
+import { MissedScheduleFlag } from "../components/MissedScheduleFlag";
 import { Toggle } from "../components/Toggle";
 import { BellIcon, CloneIcon, HistoryIcon, PencilIcon, PlayIcon, StopIcon, TrashIcon } from "../components/icons";
 
@@ -194,7 +195,17 @@ export function TasksList() {
                 <td className="px-4 py-3 text-xs"><span className="px-1.5 py-0.5 rounded bg-border/60 font-mono">{typeLabel(t)}</span></td>
                 <td className="px-4 py-3 text-muted text-xs">{sourceById[t.source_id]?.name ?? "—"}</td>
                 <td className="px-4 py-3 font-mono text-xs">{t.cron}</td>
-                <td className="px-4 py-3 text-muted text-xs">{t.enabled ? relTime(t.next_run) : "disabled"}</td>
+                <td className="px-4 py-3 text-muted text-xs">
+                  {/* The flag sits with `next run` rather than with the state
+                      pill because it is a fact about the schedule, and the
+                      overdue time is right beside it. Keeping it out of the
+                      state column is also what lets the row report a
+                      successful last run and a dead schedule at once. */}
+                  <div className="flex flex-col gap-1 items-start">
+                    <span>{t.enabled ? relTime(t.next_run) : "disabled"}</span>
+                    <MissedScheduleFlag missed={t.missed_schedule} />
+                  </div>
+                </td>
                 <td className="px-4 py-3 text-muted text-xs">{lastRunTime(t.last_run_at)}</td>
                 <td className="px-4 py-3"><Toggle checked={t.enabled} onChange={() => toggle.mutate(t)} /></td>
                 <td className="px-4 py-3">
@@ -260,6 +271,16 @@ export function TasksList() {
                 <dd className="truncate">{t.enabled ? relTime(t.next_run) : "disabled"}</dd>
               </div>
             </dl>
+
+            {/* Full width rather than inside the `next run` cell: the phone
+                card's two columns are ~160px each and the flag would be
+                clipped by `truncate`. A fault notice that gets cut in half is
+                the same silence this card exists to end. */}
+            {t.missed_schedule && (
+              <div>
+                <MissedScheduleFlag missed={t.missed_schedule} />
+              </div>
+            )}
 
             {/* Wraps: six 44px controls (seven with Kuma) plus the toggle and
                 label need ~384px, more than an iPhone SE's 343px of usable

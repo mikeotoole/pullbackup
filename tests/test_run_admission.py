@@ -2,7 +2,7 @@ import asyncio
 import base64
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -436,7 +436,14 @@ async def test_scheduler_execution_is_owned_by_shutdown_registry(
 async def test_update_rejects_source_reassignment_while_run_is_active(
     sqlite_engine, monkeypatch
 ):
-    monkeypatch.setattr(scheduler, "next_run_iso", lambda task: None)
+    # `_to_out` reads `next_run_at` directly, because the datetime feeds the
+    # missed-schedule derivation as well as the displayed value. A stub on
+    # the ISO helper would sit here looking effective while the real call
+    # went past it, and an unstarted scheduler would then report every task
+    # as having missed its schedule.
+    monkeypatch.setattr(
+        scheduler, "next_run_at", lambda task: datetime.now(timezone.utc) + timedelta(hours=1)
+    )
     (task,) = create_source_tasks(sqlite_engine, count=1)
     replacement_source = create_source(sqlite_engine, "replacement")
     admission = await runner.admit_run(task.id)
@@ -489,7 +496,14 @@ async def test_source_update_rejects_while_run_is_active(sqlite_engine):
 async def test_mutation_first_serializes_before_later_admission(
     sqlite_engine, monkeypatch
 ):
-    monkeypatch.setattr(scheduler, "next_run_iso", lambda task: None)
+    # `_to_out` reads `next_run_at` directly, because the datetime feeds the
+    # missed-schedule derivation as well as the displayed value. A stub on
+    # the ISO helper would sit here looking effective while the real call
+    # went past it, and an unstarted scheduler would then report every task
+    # as having missed its schedule.
+    monkeypatch.setattr(
+        scheduler, "next_run_at", lambda task: datetime.now(timezone.utc) + timedelta(hours=1)
+    )
     (task,) = create_source_tasks(sqlite_engine, count=1)
     replacement_source = create_source(sqlite_engine, "serialized")
     mutation_started = asyncio.Event()
@@ -1519,7 +1533,14 @@ async def test_unsafe_persisted_rsync_destination_spawns_nothing(
 async def test_api_rejects_updating_a_task_to_an_out_of_root_destination(
     sqlite_engine, tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(scheduler, "next_run_iso", lambda task: None)
+    # `_to_out` reads `next_run_at` directly, because the datetime feeds the
+    # missed-schedule derivation as well as the displayed value. A stub on
+    # the ISO helper would sit here looking effective while the real call
+    # went past it, and an unstarted scheduler would then report every task
+    # as having missed its schedule.
+    monkeypatch.setattr(
+        scheduler, "next_run_at", lambda task: datetime.now(timezone.utc) + timedelta(hours=1)
+    )
     (task,) = create_source_tasks(sqlite_engine, count=1)
     outside = tmp_path.parent / "update-outside" / "task"
 

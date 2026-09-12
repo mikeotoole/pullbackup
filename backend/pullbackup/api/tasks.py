@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..db import get_session
 from ..models import Run, RunState, Source, Task, utcnow
-from ..services import fs, kuma, scheduler
+from ..services import cadence, fs, kuma, scheduler
 from ..services.runner import (
     admit_run,
     lifecycle_mutation_lock,
@@ -108,21 +108,68 @@ class TaskOut(TaskFields):
     last_run_id: Optional[int] = None
     last_run_at: Optional[datetime] = None
     last_run_state: Optional[RunState] = None
+    # Derived, never stored: this task's schedule has silently stopped firing.
+    #
+    # INCIDENT 2026-09-06..10. `last_run_state` read `success` on every row for
+    # four days while nothing executed. It was true — that WAS the last
+    # completed run — and it answered a different question from the one the
+    # operator was asking. This field answers the other one, and it is a
+    # separate field rather than a sixth RunState precisely so a row can say
+    # both things at once. See services/cadence.py.
+    missed_schedule: bool = False
 
 
 def _to_out(t: Task, session: Session) -> TaskOut:
     last = session.exec(
         select(Run).where(Run.task_id == t.id).order_by(Run.started_at.desc())
     ).first()
+    next_run = scheduler.next_run_at(t)
     return TaskOut(
         **{k: getattr(t, k) for k in TaskFields.model_fields.keys()},
         id=t.id,
         kuma_monitor_id=t.kuma_monitor_id,
         kuma_push_token=t.kuma_push_token,
-        next_run=scheduler.next_run_iso(t),
+        next_run=None if next_run is None else next_run.isoformat(),
         last_run_id=last.id if last else None,
         last_run_at=last.started_at if last else None,
         last_run_state=last.state if last else None,
+        missed_schedule=cadence.schedule_is_missed(
+            cron=t.cron,
+            enabled=t.enabled,
+            next_run=next_run,
+            # Reuses the row already loaded above rather than issuing a second
+            # query per task: the newest run is the only one that can be
+            # non-terminal, because admission refuses a new run while one is
+            # active for the task's source.
+            has_active_run=bool(
+                last is not None
+                and last.state in (RunState.pending, RunState.running)
+            ),
+            # When work last STOPPED, not when it last started.
+            #
+            # ai-review finding on PR #47, confirmed by measurement: keying on
+            # `started_at` flags an hourly task the instant a legitimately
+            # two-hour transfer SUCCEEDS, because by then its start is older
+            # than cadence + grace. This deployment has real multi-hour pulls,
+            # so that false positive would fire on every one of them — and a
+            # flag that cries wolf on healthy work is worse than no flag, given
+            # that the incident's whole cost was nobody watching this screen.
+            #
+            # Falls back to `started_at` when there is no finish time (an
+            # active row, or one written before the field was reliably set).
+            # That direction is the safe one: it can only make a task look MORE
+            # silent than it was, so a wedge cannot hide behind a missing
+            # timestamp.
+            #
+            # Falls back to the task's creation time when there is no run at
+            # all, so a task judged from when it began being scheduled. A
+            # brand-new task is not flagged before its first window arrives;
+            # one created days ago that has still never run IS flagged, which
+            # is correct — it is enabled, scheduled, and backing nothing up.
+            last_activity_at=(
+                (last.finished_at or last.started_at) if last else t.created_at
+            ),
+        ),
     )
 
 

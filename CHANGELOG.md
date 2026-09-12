@@ -7,7 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The task list now flags a task whose schedule has stopped firing, separately
+  from the state of its last run. During the 2026-09-06..10 wedge every row
+  read `success` for four days while nothing executed. That was true — those
+  were the last *completed* runs — and it answered a different question from
+  the one an operator opens the page to ask. A `missed schedule` flag now
+  answers the other one, on both the desktop table and the phone card, beside
+  the run-state pill rather than inside it, so a row can report a successful
+  last run and a dead schedule at the same time.
+
+  A task is flagged when it has been silent for longer than its own cadence
+  plus a grace window, or when its next scheduled firing is materially in the
+  past, and in neither case while it is disabled or has a run in flight. The
+  window is proportional to the task's cron — five minutes late means nothing
+  to a daily backup and is most of a cycle to one that runs every two minutes —
+  and is clamped to between five minutes and an hour, so a wedged task surfaces
+  within one cadence cycle rather than after half a day of silence.
+
+  The elapsed-silence check is the one that matters, and it is there because
+  measuring the real failure showed the obvious signal does not catch it.
+  APScheduler advances a job's next firing on every tick regardless of whether
+  the job body did any work: during the incident `_execute` returned
+  immediately each time because admission denied it, and `max_instances=1`
+  skips a fire without holding the trigger back. Reproduced against the real
+  scheduler, every wedged task kept a perfectly healthy-looking *future*
+  `next_run` for the whole four days. A stale-`next_run` check alone would have
+  shown a clean task list throughout the outage — the same blindness in a new
+  place. The stale check is still applied, because it catches what elapsed
+  silence cannot see quickly: a job never registered, a scheduler that never
+  started, or a trigger that genuinely stopped advancing.
+
+- `/api/system/health` now reports whether the scheduler is still executing, so
+  external monitoring can tell "the app is up" from "the app is executing
+  backups". The container healthcheck probed this endpoint every thirty seconds
+  throughout the incident and stayed green, because it only ever proved the
+  HTTP server was answering. The signal is a heartbeat job registered *in* the
+  scheduler and stamped every sixty seconds, reported stale after three missed
+  beats. APScheduler's own `running` flag is not the measurement: it is set by
+  `start()` and stayed true for the full four days. Only work the scheduler
+  actually performs is evidence that it performs work.
+
+  The public response carries one boolean, `scheduler_alive`, and nothing else.
+  This is the only endpoint reachable without credentials; the heartbeat
+  timestamp, its age, the beat interval and the staleness threshold would
+  together publish exactly when the service last did anything and exactly how
+  wide a gap has to open before it admits to a problem. That detail belongs to
+  the operator and lives on the authenticated endpoint below.
+
+  `ok` stays `true` when the scheduler is dead. This response is what the
+  compose healthcheck reads, and a container that restarted itself on a wedged
+  scheduler would destroy the evidence and disguise the wedge as a crash loop.
+  The distinction lives in the field; point a monitor at `scheduler_alive`.
+
+- `GET /api/system/scheduler` reports the full liveness detail — `running`
+  alongside `alive`, the last heartbeat, its age and the staleness threshold —
+  plus the ids of every task whose schedule is currently missed. Authenticated,
+  unlike `/health`, because it names which of the operator's tasks are failing
+  and how the scheduler is behaving internally; the anonymous surface stays
+  exactly one coarse boolean wide. It reads the per-task flag off the task
+  list's own projection rather than deriving it again, so the endpoint and the
+  UI cannot drift into disagreeing about the same row.
+
 ### Fixed
+
+- `next_run` no longer raises when the scheduler has not started. APScheduler
+  only populates a job's `next_run_time` once the scheduler is running; on an
+  unstarted one the attribute is an unset slot, and reading it directly raised
+  `AttributeError`. The application start-up ordering meant a request never hit
+  this in production, and the test suite carried a fixture stubbing the call
+  out — survivable while the value was only displayed. It is not survivable now
+  that the same call decides whether a row is flagged: a scheduler that never
+  started is the most total form of the fault the flag exists to report, and it
+  would have turned the task list into a 500 in exactly that case. The value is
+  now read defensively and answers "no scheduled run", which the missed-schedule
+  check treats as the strongest signal available.
 
 - A hung backup no longer wedges every other backup indefinitely. A Syncoid
   run hit a ZFS divergence and its subprocess never returned; nothing anywhere
