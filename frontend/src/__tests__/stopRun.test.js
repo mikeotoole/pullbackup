@@ -25,7 +25,7 @@
 //     would make a mis-tap start a transfer the operator meant to end.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
+import { createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -342,6 +342,28 @@ describe("starting a run now", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tasks"] });
     expect(alerted).toHaveBeenCalledTimes(1);
     expect(String(alerted.mock.calls[0][0])).toContain("for this source");
+  });
+
+  it("still reports a refusal after StrictMode replays its mount effect", async () => {
+    vi.spyOn(api, "runTask").mockRejectedValue(
+      new Error("409 a run is already pending or running for this task"),
+    );
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = mount(
+      createElement(StrictMode, null, createElement(TasksList)),
+      (qc) => {
+        qc.setQueryData(["tasks"], [task()]);
+        qc.setQueryData(["sources"], [SOURCE]);
+        qc.setQueryData(["sysinfo"], { kuma_url: "" });
+      },
+    );
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+    });
+    await settle();
+
+    expect(alerted).toHaveBeenCalledTimes(1);
   });
 
   it("does not show a late refusal after the operator navigates away", async () => {
