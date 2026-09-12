@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mike O'Toole
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type Task } from "../lib/api";
@@ -65,6 +65,14 @@ function SortHeader({
 
 export function TasksList() {
   const qc = useQueryClient();
+  const mounted = useRef(true);
+  useEffect(() => {
+    // StrictMode replays setup → cleanup → setup in development.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const { data: tasks = [] } = useQuery({
     queryKey: ["tasks"],
     queryFn: api.listTasks,
@@ -104,7 +112,16 @@ export function TasksList() {
       // Refetch immediately so the row flips to "running"
       qc.invalidateQueries({ queryKey: ["tasks"] });
     },
+    // Hook-level handlers are copied onto every mutation. Per-call mutate()
+    // handlers belong to the shared observer and only the latest overlapping
+    // request keeps them, which can silently drop an earlier 409.
+    onError: (e) => {
+      if (mounted.current) {
+        alert(`Could not start the run: ${String((e as Error).message)}`);
+      }
+    },
   });
+  const requestRun = (id: number) => runNow.mutate(id);
   const stopRun = useMutation({
     mutationFn: (runId: number) => api.cancelRun(runId),
     onSuccess: () => {
@@ -192,7 +209,7 @@ export function TasksList() {
                   {t.kuma_monitor_id && sys?.kuma_url && (
                     <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="inline-block w-7 text-center text-muted hover:text-white"><BellIcon className="inline-block w-4 h-4 align-middle" /></a>
                   )}
-                  <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="inline-block w-7 text-center text-muted hover:text-white"><PlayIcon className="inline-block w-4 h-4 align-middle" /></button>
+                  <button title="run now" aria-label="Run now" onClick={() => requestRun(t.id)} className="inline-block w-7 text-center text-muted hover:text-white"><PlayIcon className="inline-block w-4 h-4 align-middle" /></button>
                   {isStoppable(t) && (
                     <button title="stop the running run" aria-label="Stop run" onClick={() => confirm(`Stop the running ${typeLabel(t)} run for ${t.name}?`) && stopRun.mutate(t.last_run_id!)} className="inline-block w-7 text-center text-muted hover:text-danger"><StopIcon className="inline-block w-4 h-4 align-middle" /></button>
                   )}
@@ -260,7 +277,7 @@ export function TasksList() {
                 {t.kuma_monitor_id && sys?.kuma_url && (
                   <a href={`${sys.kuma_url}/dashboard/${t.kuma_monitor_id}`} target="_blank" rel="noreferrer" title="Uptime Kuma monitor" aria-label="Uptime Kuma monitor" className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><BellIcon className="w-5 h-5" /></a>
                 )}
-                <button title="run now" aria-label="Run now" onClick={() => runNow.mutate(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><PlayIcon className="w-5 h-5" /></button>
+                <button title="run now" aria-label="Run now" onClick={() => requestRun(t.id)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-white"><PlayIcon className="w-5 h-5" /></button>
                 {isStoppable(t) && (
                   <button title="stop the running run" aria-label="Stop run" onClick={() => confirm(`Stop the running ${typeLabel(t)} run for ${t.name}?`) && stopRun.mutate(t.last_run_id!)} className="min-h-[44px] min-w-[44px] flex items-center justify-center text-muted hover:text-danger"><StopIcon className="w-5 h-5" /></button>
                 )}

@@ -25,7 +25,7 @@
 //     would make a mis-tap start a transfer the operator meant to end.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
+import { createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -281,6 +281,111 @@ describe("stopping a running run", () => {
     await settle();
 
     expect(byName(host, "Stop run").length).toBe(2);
+  });
+});
+
+describe("starting a run now", () => {
+  it.each([
+    ["desktop", 0, "source"],
+    ["phone", 1, "task"],
+  ])("surfaces the API's 409 refusal on %s with its %s scope", async (_layout, buttonIndex, scope) => {
+    const detail = `409 a run is already pending or running for this ${scope}`;
+    vi.spyOn(api, "runTask").mockRejectedValue(new Error(detail));
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = tasksList([task({ last_run_state: "running" })]);
+
+    await act(async () => {
+      byName(host, "Run now")[buttonIndex].click();
+    });
+    await settle();
+
+    expect(alerted).toHaveBeenCalledTimes(1);
+    expect(String(alerted.mock.calls[0][0])).toContain(detail);
+  });
+
+  it("does not show an error when the run request succeeds", async () => {
+    vi.spyOn(api, "runTask").mockResolvedValue({ queued: true });
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = tasksList([task()]);
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+    });
+    await settle();
+
+    expect(alerted).not.toHaveBeenCalled();
+  });
+
+  it("reports an earlier 409 when an overlapping later request succeeds first", async () => {
+    let rejectFirst;
+    let resolveSecond;
+    vi.spyOn(api, "runTask")
+      .mockImplementationOnce(() => new Promise((_, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveSecond = resolve;
+      }));
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host, qc } = tasksList([task({ last_run_state: "running" })]);
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+      byName(host, "Run now")[1].click();
+    });
+    resolveSecond({ queued: true });
+    await settle();
+    rejectFirst(new Error("409 a run is already pending or running for this source"));
+    await settle();
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tasks"] });
+    expect(alerted).toHaveBeenCalledTimes(1);
+    expect(String(alerted.mock.calls[0][0])).toContain("for this source");
+  });
+
+  it("still reports a refusal after StrictMode replays its mount effect", async () => {
+    vi.spyOn(api, "runTask").mockRejectedValue(
+      new Error("409 a run is already pending or running for this task"),
+    );
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = mount(
+      createElement(StrictMode, null, createElement(TasksList)),
+      (qc) => {
+        qc.setQueryData(["tasks"], [task()]);
+        qc.setQueryData(["sources"], [SOURCE]);
+        qc.setQueryData(["sysinfo"], { kuma_url: "" });
+      },
+    );
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+    });
+    await settle();
+
+    expect(alerted).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show a late refusal after the operator navigates away", async () => {
+    let rejectRun;
+    vi.spyOn(api, "runTask").mockImplementation(() => new Promise((_, reject) => {
+      rejectRun = reject;
+    }));
+    const alerted = vi.spyOn(window, "alert").mockImplementation(() => {});
+    const { host } = tasksList([task()]);
+
+    await act(async () => {
+      byName(host, "Run now")[0].click();
+    });
+    const root = roots.pop();
+    const mountedHost = hosts.pop();
+    act(() => root.unmount());
+    mountedHost.remove();
+
+    rejectRun(new Error("409 a run is already pending or running for this task"));
+    await settle();
+
+    expect(alerted).not.toHaveBeenCalled();
   });
 });
 
