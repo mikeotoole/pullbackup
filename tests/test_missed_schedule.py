@@ -400,6 +400,99 @@ def test_a_task_created_long_ago_that_never_ran_is_flagged(sqlite_engine, monkey
     assert row.missed_schedule is True
 
 
+def test_a_long_run_that_just_succeeded_is_not_a_missed_schedule(sqlite_engine, monkeypatch):
+    """A backup that just finished is the opposite of a missed schedule.
+
+    ai-review finding, PR #47, confirmed by measurement before fixing: an
+    hourly task whose transfer legitimately takes two hours has a `started_at`
+    older than cadence + grace the INSTANT it succeeds, so silence measured
+    from the start flags it the moment it finishes backing up. This repo has
+    real multi-hour transfers; that false positive would fire on every one of
+    them, and a flag that cries wolf on healthy work is worse than no flag —
+    the incident's entire cost was that nobody was looking at this screen.
+
+    Silence is therefore measured from when work last STOPPED, not when it
+    last started.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    with Session(sqlite_engine) as session:
+        # HOURLY, deliberately: the shared fixture builds daily tasks, whose
+        # 25-hour window swallows a two-hour run and would make this test pass
+        # against the defect it is written for.
+        stored = session.get(Task, task.id)
+        stored.cron = HOURLY
+        session.add(stored)
+        session.add(
+            Run(
+                task_id=task.id,
+                state=RunState.success,
+                started_at=stale(2 * 3600),
+                finished_at=stale(60),
+            )
+        )
+        session.commit()
+    assert cadence.cadence_seconds(HOURLY) + cadence.schedule_grace_seconds(HOURLY) < 2 * 3600
+    monkeypatch.setattr(scheduler, "next_run_at", lambda t: ahead(3000))
+
+    with Session(sqlite_engine) as session:
+        (row,) = tasks_api.list_tasks(session)
+
+    assert row.last_run_state == RunState.success
+    assert row.missed_schedule is False
+
+
+def test_a_long_run_that_finished_a_cycle_ago_is_still_flagged(sqlite_engine, monkeypatch):
+    """The fix must not become a way for a task to stop being watched.
+
+    Measuring from `finished_at` moves the clock forward once; it must not
+    disable it. A task whose last run ended more than a cycle ago is silent
+    regardless of how long that run took.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    with Session(sqlite_engine) as session:
+        session.add(
+            Run(
+                task_id=task.id,
+                state=RunState.success,
+                started_at=stale(6 * 86400),
+                finished_at=stale(4 * 86400),
+            )
+        )
+        session.commit()
+    monkeypatch.setattr(scheduler, "next_run_at", lambda t: ahead(600))
+
+    with Session(sqlite_engine) as session:
+        (row,) = tasks_api.list_tasks(session)
+
+    assert row.missed_schedule is True
+
+
+def test_a_terminal_run_with_no_finish_time_falls_back_to_its_start(sqlite_engine, monkeypatch):
+    """Rows written before `finished_at` was reliably set must still be judged.
+
+    Falling back to `started_at` is the conservative direction: it can only
+    make a task look MORE silent than it was, never less, so a wedge cannot
+    hide behind a missing timestamp.
+    """
+    (task,) = create_source_tasks(sqlite_engine, count=1)
+    with Session(sqlite_engine) as session:
+        session.add(
+            Run(
+                task_id=task.id,
+                state=RunState.failed,
+                started_at=stale(4 * 86400),
+                finished_at=None,
+            )
+        )
+        session.commit()
+    monkeypatch.setattr(scheduler, "next_run_at", lambda t: ahead(600))
+
+    with Session(sqlite_engine) as session:
+        (row,) = tasks_api.list_tasks(session)
+
+    assert row.missed_schedule is True
+
+
 def test_the_task_list_does_not_flag_a_healthy_schedule(sqlite_engine, monkeypatch):
     (task,) = create_source_tasks(sqlite_engine, count=1)
     monkeypatch.setattr(scheduler, "next_run_at", lambda t: ahead(600))
