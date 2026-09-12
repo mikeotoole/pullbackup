@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Mike O'Toole
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api, type Task } from "../lib/api";
@@ -65,6 +65,10 @@ function SortHeader({
 
 export function TasksList() {
   const qc = useQueryClient();
+  const mounted = useRef(true);
+  useEffect(() => () => {
+    mounted.current = false;
+  }, []);
   const { data: tasks = [] } = useQuery({
     queryKey: ["tasks"],
     queryFn: api.listTasks,
@@ -104,13 +108,16 @@ export function TasksList() {
       // Refetch immediately so the row flips to "running"
       qc.invalidateQueries({ queryKey: ["tasks"] });
     },
+    // Hook-level handlers are copied onto every mutation. Per-call mutate()
+    // handlers belong to the shared observer and only the latest overlapping
+    // request keeps them, which can silently drop an earlier 409.
+    onError: (e) => {
+      if (mounted.current) {
+        alert(`Could not start the run: ${String((e as Error).message)}`);
+      }
+    },
   });
-  const requestRun = (id: number) => runNow.mutate(id, {
-    // A per-call callback belongs to this mounted observer. Unlike a mutation-
-    // level callback, react-query drops it when navigation unmounts this list,
-    // so a late refusal cannot interrupt the operator on another screen.
-    onError: (e) => alert(`Could not start the run: ${String((e as Error).message)}`),
-  });
+  const requestRun = (id: number) => runNow.mutate(id);
   const stopRun = useMutation({
     mutationFn: (runId: number) => api.cancelRun(runId),
     onSuccess: () => {
