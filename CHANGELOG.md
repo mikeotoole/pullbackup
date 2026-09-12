@@ -39,26 +39,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silence cannot see quickly: a job never registered, a scheduler that never
   started, or a trigger that genuinely stopped advancing.
 
-- `/api/system/health` now reports scheduler liveness, so external monitoring
-  can tell "the app is up" from "the app is executing backups". The container
-  healthcheck probed this endpoint every thirty seconds throughout the incident
-  and stayed green, because it only ever proved the HTTP server was answering.
-  The signal is a heartbeat job registered *in* the scheduler and stamped every
-  sixty seconds, reported stale after three missed beats. APScheduler's own
-  `running` flag is reported alongside it but is deliberately not the
-  measurement: it is set by `start()` and stayed true for the full four days.
-  Only work the scheduler actually performs is evidence that it performs work.
+- `/api/system/health` now reports whether the scheduler is still executing, so
+  external monitoring can tell "the app is up" from "the app is executing
+  backups". The container healthcheck probed this endpoint every thirty seconds
+  throughout the incident and stayed green, because it only ever proved the
+  HTTP server was answering. The signal is a heartbeat job registered *in* the
+  scheduler and stamped every sixty seconds, reported stale after three missed
+  beats. APScheduler's own `running` flag is not the measurement: it is set by
+  `start()` and stayed true for the full four days. Only work the scheduler
+  actually performs is evidence that it performs work.
+
+  The public response carries one boolean, `scheduler_alive`, and nothing else.
+  This is the only endpoint reachable without credentials; the heartbeat
+  timestamp, its age, the beat interval and the staleness threshold would
+  together publish exactly when the service last did anything and exactly how
+  wide a gap has to open before it admits to a problem. That detail belongs to
+  the operator and lives on the authenticated endpoint below.
 
   `ok` stays `true` when the scheduler is dead. This response is what the
   compose healthcheck reads, and a container that restarted itself on a wedged
   scheduler would destroy the evidence and disguise the wedge as a crash loop.
-  The distinction lives in the `scheduler` block; point a monitor at
-  `scheduler.alive`.
+  The distinction lives in the field; point a monitor at `scheduler_alive`.
 
-- `GET /api/system/scheduler` reports the same liveness plus the ids of every
-  task whose schedule is currently missed. Authenticated, unlike `/health`,
-  because it names which of the operator's tasks are failing — the anonymous
-  surface stays exactly one endpoint wide. It reads the flag off the task
+- `GET /api/system/scheduler` reports the full liveness detail — `running`
+  alongside `alive`, the last heartbeat, its age and the staleness threshold —
+  plus the ids of every task whose schedule is currently missed. Authenticated,
+  unlike `/health`, because it names which of the operator's tasks are failing
+  and how the scheduler is behaving internally; the anonymous surface stays
+  exactly one coarse boolean wide. It reads the per-task flag off the task
   list's own projection rather than deriving it again, so the endpoint and the
   UI cannot drift into disagreeing about the same row.
 

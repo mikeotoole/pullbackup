@@ -35,12 +35,13 @@ process-wide heartbeat, and a genuinely dead scheduler flags every task at
 once — an operator needs to be able to tell those apart.
 """
 import asyncio
+import json
 from datetime import timedelta
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from pullbackup import main
+from pullbackup import db, main
 from pullbackup.api import system as system_api
 from pullbackup.api import tasks as tasks_api
 from pullbackup.models import Run, RunState, Task, utcnow
@@ -701,7 +702,7 @@ def test_the_health_endpoint_reports_scheduler_liveness(monkeypatch):
     body = TestClient(main.app).get("/api/system/health").json()
 
     assert body["ok"] is True
-    assert body["scheduler"]["alive"] is True
+    assert body["scheduler_alive"] is True
 
 
 def test_the_health_endpoint_says_so_when_the_scheduler_is_wedged(monkeypatch):
@@ -714,7 +715,89 @@ def test_the_health_endpoint_says_so_when_the_scheduler_is_wedged(monkeypatch):
     # healthcheck reads, and flipping it would restart the container on a
     # signal this card only makes visible. The distinction lives in the field.
     assert body["ok"] is True
-    assert body["scheduler"]["alive"] is False
+    assert body["scheduler_alive"] is False
+
+
+def test_the_anonymous_health_response_carries_no_telemetry(monkeypatch):
+    """The only unauthenticated endpoint answers one question and stops.
+
+    Written RED against 83398f10, where `/health` returned the whole
+    `liveness()` dict to anyone who asked: exact heartbeat timestamp, its age
+    in seconds, the beat interval and the staleness threshold. None of that is
+    needed to answer "is this service still backing things up", and all of it
+    describes the internal timing of a service the caller has not
+    authenticated to. The heartbeat timestamp in particular tells an anonymous
+    caller exactly when the scheduler last did anything and exactly how long a
+    gap has to open before anyone notices — the shape of a service's blind
+    window, handed out for free.
+
+    The boolean is the whole external contract: `false` means stop trusting
+    that backups are running. Everything an operator needs to *diagnose* that
+    lives one endpoint over, behind the credential.
+    """
+    monkeypatch.setattr(scheduler, "_scheduler", _RunningScheduler())
+    monkeypatch.setattr(scheduler, "_last_heartbeat", utcnow())
+
+    body = TestClient(main.app).get("/api/system/health").json()
+
+    assert set(body) == {"ok", "version", "scheduler_alive"}
+    assert isinstance(body["scheduler_alive"], bool)
+    # Named individually as well as by the set comparison above: these are the
+    # specific fields that leaked, and a future response gaining a nested
+    # container would defeat a shape assertion alone.
+    serialised = json.dumps(body)
+    for leaked in (
+        "last_heartbeat",
+        "heartbeat_age_seconds",
+        "heartbeat_interval_seconds",
+        "stale_after_seconds",
+        "missed_schedule_count",
+        "missed_schedule_task_ids",
+        "running",
+    ):
+        assert leaked not in serialised
+
+
+@pytest.mark.asyncio
+async def test_the_scheduler_endpoint_carries_the_detail_health_no_longer_does(
+    sqlite_engine, monkeypatch
+):
+    """The split has to leave the detail somewhere, or removing it from
+    `/health` would be a loss rather than a move. Same process state as the
+    anonymous probe above; an authenticated caller gets the timings back."""
+    tasks = create_source_tasks(sqlite_engine, count=1)
+    monkeypatch.setattr(scheduler, "_scheduler", _RunningScheduler())
+    monkeypatch.setattr(scheduler, "_last_heartbeat", utcnow())
+    monkeypatch.setattr(scheduler, "next_run_at", lambda t: stale(999999))
+
+    def override_session():
+        with Session(sqlite_engine) as session:
+            yield session
+
+    previous = main.app.dependency_overrides.get(db.get_session)
+    main.app.dependency_overrides[db.get_session] = override_session
+    try:
+        transport = httpx.ASGITransport(app=main.app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            auth=(TEST_HTTP_USERNAME, TEST_HTTP_PASSWORD),
+        ) as client:
+            response = await client.get("/api/system/scheduler")
+    finally:
+        if previous is None:
+            main.app.dependency_overrides.pop(db.get_session, None)
+        else:
+            main.app.dependency_overrides[db.get_session] = previous
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scheduler"]["running"] is True
+    assert body["scheduler"]["alive"] is True
+    assert body["scheduler"]["last_heartbeat"] is not None
+    assert body["scheduler"]["heartbeat_age_seconds"] is not None
+    assert body["scheduler"]["stale_after_seconds"] > 0
+    assert body["missed_schedule_task_ids"] == [tasks[0].id]
 
 
 @pytest.mark.asyncio

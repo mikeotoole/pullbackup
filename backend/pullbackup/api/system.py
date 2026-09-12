@@ -6,8 +6,8 @@ from sqlmodel import Session
 from ..config import settings
 from ..db import get_session
 from ..services import fs, scheduler, ssh
-from . import tasks as tasks_api
 from .. import __version__
+from . import tasks as tasks_api
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -18,26 +18,41 @@ def health():
 
     INCIDENT 2026-09-06..10: the compose healthcheck probed this endpoint every
     thirty seconds for four days and stayed green while the scheduler executed
-    nothing, because it only ever proved the HTTP server was answering. The
-    `scheduler` block is the missing fact — an external monitor can now tell
+    nothing, because it only ever proved the HTTP server was answering.
+    `scheduler_alive` is the missing fact — an external monitor can now tell
     "the app is up" from "the app is backing things up".
+
+    One boolean, and nothing else. This is the only endpoint in the app an
+    unauthenticated caller can reach, so everything it returns is public: the
+    heartbeat timestamp, its age, the beat interval and the staleness
+    threshold would together tell anyone who asked exactly when this service
+    last did anything and exactly how wide a gap has to open before it admits
+    to a problem. None of that is needed to answer "should I still trust that
+    backups are running"; all of it belongs to the operator. The timings, and
+    the ids of the tasks actually affected, live behind the credential on
+    `/api/system/scheduler`.
 
     `ok` deliberately stays true when the scheduler is dead. This response is
     what the container healthcheck reads, and a container that restarts itself
     on a wedged scheduler would destroy the evidence and mask the wedge as a
     crash loop. Report the distinction; let a human or a monitor decide.
     """
-    return {"ok": True, "version": __version__, "scheduler": scheduler.liveness()}
+    return {
+        "ok": True,
+        "version": __version__,
+        "scheduler_alive": scheduler.liveness()["alive"],
+    }
 
 
 @router.get("/scheduler")
 def scheduler_health(session: Session = Depends(get_session)):
-    """Scheduler liveness plus every task whose schedule has stopped firing.
+    """Scheduler liveness in full, plus every task whose schedule stopped firing.
 
     Authenticated, unlike `/health`: this names which of the operator's tasks
-    are failing, and the unauthenticated surface stays exactly one endpoint
-    wide. `/health` carries the process-wide signal an anonymous monitor needs;
-    this carries the per-task detail that only the operator should see.
+    are failing and how the scheduler's own timing is behaving, and the
+    unauthenticated surface stays exactly one coarse boolean wide. `/health`
+    carries the process-wide yes/no an anonymous monitor needs; this carries
+    everything needed to work out *why* that answer changed.
 
     The two answer different questions and both are needed. A single wedged
     task is invisible in the heartbeat — the scheduler is fine, that one job is
