@@ -1409,9 +1409,19 @@ async def test_execution_task_creation_failure_terminalizes_admitted_run(
     assert run.error_message == "failed to start admitted run"
 
 
-def test_default_global_concurrency_is_one(monkeypatch):
+def test_default_global_concurrency_is_bounded_but_not_serialized(monkeypatch):
+    """The default must be a real bound, not a system-wide serialization.
+
+    Was 1, which made one long transfer stop every other backup. See
+    tests/test_run_concurrency.py for the starvation this default caused and
+    for the destination exclusion that makes a value above 1 safe.
+    """
+    from pullbackup.config import DEFAULT_MAX_CONCURRENT_RUNS
+
     monkeypatch.delenv("PULLBACK_MAX_CONCURRENT_RUNS", raising=False)
-    assert Settings(_env_file=None).max_concurrent_runs == 1  # type: ignore[call-arg]
+    default = Settings(_env_file=None).max_concurrent_runs  # type: ignore[call-arg]
+    assert default == DEFAULT_MAX_CONCURRENT_RUNS
+    assert default > 1
 
 
 def test_zfs_destination_roots_are_explicit_and_empty_by_default(monkeypatch):
@@ -1426,13 +1436,16 @@ def test_zfs_destination_roots_are_explicit_and_empty_by_default(monkeypatch):
     assert configured.zfs_dest_roots_list == ["cache/docker_remote", "tank/backups"]
 
 
-def test_bundled_compose_sets_global_concurrency_to_one():
+def test_bundled_compose_documents_the_default_concurrency():
+    from pullbackup.config import DEFAULT_MAX_CONCURRENT_RUNS
+
     compose = (Path(__file__).parents[1] / "docker" / "compose.example.yaml").read_text()
     env_example = (Path(__file__).parents[1] / ".env.example").read_text()
     readme = (Path(__file__).parents[1] / "README.md").read_text()
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
-    assert 'PULLBACKUP_MAX_CONCURRENT_RUNS: "1"' in compose
-    assert "PULLBACKUP_MAX_CONCURRENT_RUNS=1" in env_example
+    default = DEFAULT_MAX_CONCURRENT_RUNS
+    assert f'PULLBACKUP_MAX_CONCURRENT_RUNS: "{default}"' in compose
+    assert f"PULLBACKUP_MAX_CONCURRENT_RUNS={default}" in env_example
     assert "PULLBACKUP_ZFS_DEST_ROOTS=cache/docker_remote" in env_example
     assert "PULLBACKUP_HTTP_BASIC_USERNAME=" in env_example
     assert "PULLBACKUP_HTTP_BASIC_PASSWORD=" in env_example

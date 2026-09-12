@@ -194,6 +194,22 @@ The adoption shim is temporary: rename your variables and it goes quiet.
 
 `PULLBACKUP_ZFS_DEST_ROOTS` is a comma-separated allowlist for Syncoid destinations and ZFS pruning. Each Syncoid destination must be a descendant of one configured dataset root (for example, `cache/docker_remote/eel` beneath `cache/docker_remote`). An empty allowlist disables Syncoid and pruning operations. `PULLBACKUP_DEST_ROOTS` remains the separate filesystem allowlist for rsync destinations and the browser.
 
+### Concurrency
+
+`PULLBACKUP_MAX_CONCURRENT_RUNS` (default `3`) bounds how many backups execute
+at the same time. The bound exists because the disks and the uplink are shared:
+unbounded parallel rsync/syncoid would thrash both. Set it to `1` for a
+deployment that genuinely wants one transfer at a time; a value below `1` is
+refused at startup, because with no slots every run is admitted and then waits
+forever without starting.
+
+Raising it never allows two backups into the same place. Destination exclusion
+is enforced separately and always: two tasks writing the same directory — or
+one writing a subdirectory of the other — serialize, as do two Syncoid
+replications into the same ZFS dataset or one of its descendants. A run that
+finds its destination busy waits and starts when it frees, rather than being
+skipped. Runs from the same source also remain serialized.
+
 Matrix and Uptime Kuma credentials are optional; omit their values to disable those integrations.
 
 ## Licence

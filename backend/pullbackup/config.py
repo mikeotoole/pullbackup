@@ -32,6 +32,35 @@ LEGACY_ENV_PREFIX = "PULLBACK_"
 # 60-second window, past the trusted-proxy resolver.
 MIN_AUTH_STORE_MAX_ENTRIES = 100
 
+# Smallest concurrency the loader will accept.
+#
+# Zero or a negative value builds `asyncio.Semaphore(n)` with no permits, and
+# every run then waits on it forever: admitted, written `pending`, never
+# started. That is precisely the silent stop this setting exists to prevent,
+# arrived at through configuration instead of through one long transfer. One is
+# the floor rather than the default because deliberate full serialization is a
+# legitimate choice for a deployment with a single slow disk.
+MIN_MAX_CONCURRENT_RUNS = 1
+
+# Runs allowed to execute at once when the operator configures nothing.
+#
+# Was 1, which made a single long transfer stop every other backup in the
+# system: observed on a production instance as six hours with zero runs across
+# nineteen enabled tasks while one archive pull was in progress, with nothing
+# reported anywhere. A backup system that quietly stops backing up is the worst
+# failure shape it has, so the default must not be the value that produces it.
+#
+# Three, not higher. These runs are rsync and syncoid: the bound exists because
+# the disks and the uplink are the shared resource, and unbounded parallel
+# transfers would thrash both. Three keeps a long archive job from monopolizing
+# the schedule while staying well inside what a single NAS uplink absorbs.
+# Operators whose hardware disagrees in either direction can say so.
+#
+# Concurrency is safe here only because destination exclusion is enforced
+# separately, in the runner: two runs writing one directory or one ZFS dataset
+# still serialize regardless of this number.
+DEFAULT_MAX_CONCURRENT_RUNS = 3
+
 
 class ConfigurationError(RuntimeError):
     """Raised when the environment cannot be trusted to configure the app.
@@ -106,7 +135,15 @@ class Settings(BaseSettings):
     db_filename: str = "pullback.db"
     dest_roots: str = "/mnt/dest/backups"
     zfs_dest_roots: str = ""
-    max_concurrent_runs: int = 1
+    # How many runs may execute at once. Bounded on purpose: the disks and the
+    # uplink are shared, so unbounded parallel rsync/syncoid would thrash both.
+    # Destination exclusion is enforced separately in the runner, so raising
+    # this never allows two runs into the same directory or dataset.
+    #
+    # Refused below MIN_MAX_CONCURRENT_RUNS at startup: a non-positive value
+    # leaves the semaphore with no permits and every run waits on it forever.
+    # See _validate_max_concurrent_runs.
+    max_concurrent_runs: int = DEFAULT_MAX_CONCURRENT_RUNS
     log_retention_runs: int = 200
     http_basic_username: str = ""
     http_basic_password: str = ""
@@ -300,6 +337,25 @@ def _validate_auth_store_max_entries(cap: int) -> None:
         )
 
 
+def _validate_max_concurrent_runs(limit: int) -> None:
+    """Refuse a concurrency that cannot execute a single backup.
+
+    Rejected rather than clamped, matching the rest of this file. A clamped
+    value would run the process on a number the operator never chose while
+    their configured one silently had no effect — and here the configured
+    value's real effect is a system where no backup ever starts, which is the
+    exact silent failure this setting was changed to prevent.
+    """
+    if limit < MIN_MAX_CONCURRENT_RUNS:
+        raise ConfigurationError(
+            f"{ENV_PREFIX}MAX_CONCURRENT_RUNS must be at least "
+            f"{MIN_MAX_CONCURRENT_RUNS} (got {limit}). At zero or below no run "
+            f"can ever acquire a slot, so every backup is admitted and then "
+            f"waits forever without starting. The default is "
+            f"{DEFAULT_MAX_CONCURRENT_RUNS}."
+        )
+
+
 ENV_FILE = ".env"
 
 
@@ -353,6 +409,7 @@ def load_settings(environ=None, env_file=ENV_FILE) -> Settings:
     _validate_db_filename(settings.db_filename)
     _validate_trusted_proxies(settings.trusted_proxies)
     _validate_auth_store_max_entries(settings.auth_store_max_entries)
+    _validate_max_concurrent_runs(settings.max_concurrent_runs)
 
     mk = _MatrixKumaSettings(_env_file=env_file, **_matrix_kuma(environ))
     settings.matrix_homeserver = settings.matrix_homeserver or mk.MATRIX_HOMESERVER

@@ -22,6 +22,25 @@ from . import fs
 # concurrency control
 _global_sem = asyncio.Semaphore(settings.max_concurrent_runs)
 _source_locks: dict[int, asyncio.Lock] = {}
+# Destinations currently being written, as containment keys (see
+# `_destination_key`). Two runs may never hold overlapping keys at the same
+# time: rsync with `--delete` racing another writer in the same tree, or two
+# syncoid replications into one dataset, is data loss rather than throughput.
+#
+# This is a SEPARATE exclusion from the source lock and it is the thing that
+# makes raising `max_concurrent_runs` safe. Before it existed the global limit
+# of 1 was the only reason two tasks pointing at one directory could not
+# overlap — which meant the price of not corrupting a destination was that one
+# long transfer stopped every other backup in the system.
+_active_destinations: dict[int, tuple[str, ...]] = {}
+# Bound lazily, per running loop, by `_destination_condition`. A module-level
+# `asyncio.Condition()` would attach to whichever loop first awaited it and
+# raise "bound to a different event loop" for every loop after that — harmless
+# in the single-loop deployment, but it makes this exclusion untestable and
+# would turn any future second loop into failed runs rather than a clear error.
+_destination_cv: Optional[asyncio.Condition] = None
+_destination_cv_loop: Optional[asyncio.AbstractEventLoop] = None
+
 # This process-local lock assumes the supported single-Uvicorn-process deployment.
 _admission_lock = asyncio.Lock()
 _execution_tasks: set[asyncio.Task[int]] = set()
@@ -194,6 +213,97 @@ def _source_lock(source_id: int) -> asyncio.Lock:
         lock = asyncio.Lock()
         _source_locks[source_id] = lock
     return lock
+
+
+def _destination_key(task: Task) -> tuple[str, ...]:
+    """Return the destination this task writes, as path components.
+
+    A tuple of components rather than a string, so containment is a prefix
+    comparison on whole names. `("a", "bc")` and `("a", "bcd")` do not conflict,
+    while a plain `startswith` on the joined strings would say they do; the
+    reverse trap (`/dest/photos` vs `/dest/photos-old`) is the one that matters
+    in practice, because falsely serializing two unrelated backups is exactly
+    the defect being fixed.
+
+    rsync destinations are canonicalized through the same resolver the
+    destination boundary uses, so two rows spelling one directory differently —
+    a trailing slash, a `..`, a symlinked parent — produce the SAME key. Keying
+    on the raw `local_path` string would let a rename of the row defeat the
+    exclusion without moving a single byte on disk.
+
+    syncoid destinations are ZFS dataset names, already validated and already
+    canonical, and are split on `/` for the same ancestor/descendant
+    containment: a recursive replication of `tank/app` covers `tank/app/db`.
+
+    The two namespaces are kept apart by a leading discriminator so a dataset
+    named like a path can never collide with a real directory.
+    """
+    if task.task_type == "syncoid":
+        dataset = validate_zfs_destination(task.local_path)
+        return ("zfs", *dataset.split("/"))
+    return ("fs", *fs.resolve_destination(task.local_path).parts)
+
+
+def _conflicts(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
+    """True when one destination contains the other, in either direction.
+
+    Equality, ancestor, and descendant all conflict. Only a genuine divergence
+    at some component is safe to run concurrently.
+    """
+    shared = min(len(left), len(right))
+    return left[:shared] == right[:shared]
+
+
+def _destination_condition() -> asyncio.Condition:
+    """Return the destination condition for the running loop, rebinding if needed.
+
+    Rebinding drops `_active_destinations` with it: entries recorded under a
+    dead loop describe runs that cannot still be executing, and carrying them
+    forward would block their destinations permanently.
+    """
+    global _destination_cv, _destination_cv_loop
+    loop = asyncio.get_running_loop()
+    if _destination_cv is None or _destination_cv_loop is not loop:
+        _destination_cv = asyncio.Condition()
+        _destination_cv_loop = loop
+        _active_destinations.clear()
+    return _destination_cv
+
+
+@asynccontextmanager
+async def _destination_exclusion(run_id: int, key: tuple[str, ...]):
+    """Hold `key` for the duration of a run, waiting out any overlapping run.
+
+    A condition variable rather than a per-destination lock, because the unit of
+    exclusion is CONTAINMENT, not identity: `tank/app` must block `tank/app/db`,
+    and those are two different keys that no single lock object can cover.
+
+    Waiting — never dropping. A run that finds its destination busy stays
+    admitted and starts when the destination frees, so a task that shares a
+    destination with a long one is delayed rather than silently skipped. A drop
+    would be a quieter version of the very defect this fixes.
+    """
+    condition = _destination_condition()
+    async with condition:
+        await condition.wait_for(
+            lambda: not any(
+                _conflicts(key, held)
+                for holder, held in _active_destinations.items()
+                if holder != run_id
+            )
+        )
+        _active_destinations[run_id] = key
+    try:
+        yield
+    finally:
+        # Released under the condition so a waiter cannot miss the wakeup, and
+        # unconditionally, so a cancelled or failed run never leaves its
+        # destination permanently claimed — a leak here would wedge every task
+        # sharing that path until the process restarts.
+        async with condition:
+            _active_destinations.pop(run_id, None)
+            condition.notify_all()
+
 
 
 def build_rsync_args(task: Task, source: Source, *, destination: fs.PinnedDestination) -> list[str]:
@@ -474,9 +584,23 @@ async def _execute_run(run_id: int) -> int:
         # directory: the handle used for the exec is opened later, in
         # `pinned_command`, so a run that never executes writes nothing.
         validate_destination(task, source)
+        # Computed here, inside the validated block, so the key is derived from
+        # the same canonicalization the boundary just accepted.
+        destination_key = _destination_key(task)
         log_path = settings.log_dir / run.log_filename
 
-    async with _global_sem, _source_lock(source.id):
+    # Acquisition order is fixed everywhere: destination, then the global limit,
+    # then the source. A single order is what makes this deadlock-free.
+    #
+    # The destination is taken OUTSIDE the semaphore deliberately. A run waiting
+    # for a busy destination holds no concurrency permit, so it cannot occupy a
+    # slot that an unrelated backup could be using — which is the whole point of
+    # the change.
+    async with (
+        _destination_exclusion(run_id, destination_key),
+        _global_sem,
+        _source_lock(source.id),
+    ):
         with Session(engine) as session:
             run = session.get(Run, run_id)
             if not run:
