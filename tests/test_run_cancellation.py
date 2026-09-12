@@ -21,6 +21,7 @@ import asyncio
 import os
 import pathlib
 import subprocess
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -124,17 +125,25 @@ async def drain_leftover_executions():
 
 @pytest.fixture
 def unstarted_scheduler_next_run(monkeypatch):
-    """Stub ``next_run_iso`` for tests that leave the scheduler unstarted.
+    """Pin ``next_run_at`` for tests that leave the scheduler unstarted.
 
     APScheduler only fills in ``Job.next_run_time`` when the scheduler is
-    running; on an unstarted one the attribute is an unset slot and
-    ``next_run_iso`` raises ``AttributeError``. Production never sees this —
-    ``scheduler.start()`` runs in the FastAPI lifespan before any request can
-    arrive — but a unit test that calls ``update_task`` directly does. The
-    existing suite stubs it for exactly this reason; reusing one fixture keeps
-    the reason written down in one place instead of repeated at each call site.
+    running; on an unstarted one the attribute is an unset slot. Production
+    handles that case itself now — ``next_run_at`` reads the slot defensively
+    and answers None, and tests/test_missed_schedule.py pins that behaviour —
+    so this fixture is no longer load-bearing against a crash. It is kept
+    because these tests assert on task PAYLOADS, and an unstarted scheduler
+    would otherwise report every task's schedule as missed, coupling a
+    cancellation assertion to a scheduling signal it is not about.
+
+    Stubs ``next_run_at`` rather than ``next_run_iso``: ``_to_out`` reads the
+    datetime directly, because it needs the value for the missed-schedule
+    derivation as well as for display. A stub on the old ISO helper would sit
+    there looking effective while the real call went past it.
     """
-    monkeypatch.setattr(scheduler, "next_run_iso", lambda task: None)
+    monkeypatch.setattr(
+        scheduler, "next_run_at", lambda task: datetime.now(timezone.utc) + timedelta(hours=1)
+    )
 
 
 def make_syncoid_task(engine, tmp_path):

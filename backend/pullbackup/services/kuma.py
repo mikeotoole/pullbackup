@@ -10,10 +10,9 @@ import logging
 import secrets
 import string
 from typing import Optional
-from croniter import croniter
-from datetime import datetime, timezone
 import socketio
 from ..config import settings
+from . import cadence
 
 
 def _gen_push_token(n: int = 32) -> str:
@@ -26,17 +25,15 @@ log = logging.getLogger(__name__)
 
 
 def cron_interval_seconds(cron: str, default: int = 3600) -> int:
-    """Approximate the heartbeat interval from a cron expression by looking at the
-    gap between the next two firings. Used to size the Kuma push monitor's interval.
+    """Approximate the heartbeat interval from a cron expression.
+
+    Delegates to `cadence.cadence_seconds`, which is the single definition of
+    "how often does this task run". It used to be implemented here, and the
+    missed-schedule signal added a second implementation of the same question —
+    two answers that would drift silently, a push-monitor interval and a
+    lateness window quietly disagreeing about the same expression.
     """
-    try:
-        it = croniter(cron, datetime.now(timezone.utc))
-        a = it.get_next(datetime)
-        b = it.get_next(datetime)
-        delta = int((b - a).total_seconds())
-        return max(delta, 60)
-    except Exception:
-        return default
+    return cadence.cadence_seconds(cron, default=default)
 
 
 class KumaClient:

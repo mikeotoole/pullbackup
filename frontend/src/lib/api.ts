@@ -51,6 +51,15 @@ export type Task = {
   last_run_id: number | null;
   last_run_at: string | null;
   last_run_state: RunState | null;
+  /**
+   * Derived server-side: this task's next run is overdue and nothing is in
+   * flight for it, so its schedule has silently stopped firing.
+   *
+   * Optional rather than required because a response from a server older than
+   * this field must still typecheck and must render as unflagged — the failure
+   * mode to avoid is a version skew that paints every row with a fault.
+   */
+  missed_schedule?: boolean;
 };
 
 export type Run = {

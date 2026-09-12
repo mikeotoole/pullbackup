@@ -86,6 +86,29 @@ volumes:
   - /mnt/user/media:/mnt/dest/media              # add more roots as needed
 ```
 
+### Monitoring
+
+`/api/system/health` is unauthenticated and reports both the app and the
+scheduler:
+
+```json
+{"ok": true, "version": "0.15.0",
+ "scheduler": {"running": true, "alive": true, "heartbeat_age_seconds": 12.4, ...}}
+```
+
+Point an external monitor at **`scheduler.alive`**, not at `ok`. A backup
+service whose scheduler has stopped still serves HTTP perfectly — that is
+exactly how a four-day outage went unnoticed behind a green healthcheck — so
+`ok` answers "is the app up" and `scheduler.alive` answers "is it still running
+backups". `ok` deliberately stays `true` when the scheduler is dead, because
+this is also what the container healthcheck reads and a self-restarting
+container would destroy the evidence.
+
+`GET /api/system/scheduler` (authenticated) adds the ids of every task whose
+schedule is currently overdue. The same signal appears per row in the UI as a
+`missed schedule` flag, which is independent of the last run's state: a task
+can have succeeded last time and not have run since.
+
 ## Local dev
 
 ```bash
