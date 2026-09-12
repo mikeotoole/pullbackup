@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   succeeds too: it removes the future scheduler job and sends no signal, and the
   running transfer finishes normally.
 
+- Every column of the task list is now sortable, on desktop and phone.
+  Clicking a header selects it, clicking it again reverses the direction,
+  and the choice is remembered in the browser's local storage — a display
+  preference, not an account setting, so it follows the browser rather than
+  the login. Tasks with no last or next run sort last rather than randomly,
+  and equal keys fall back to the task id so the order is stable between
+  renders.
+
 - `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), GitHub issue templates and a
   pull-request template. The bug template asks for a version and redacted logs
   up front, because a backup tool's logs are full of real hostnames and paths
@@ -73,6 +81,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `# pullback run`; the seeded demo instance writes the same header.
 - The frontend package is `pullbackup-frontend` in `package.json` and the lock
   file, matching the product name everywhere else.
+
+### Fixed
+
+- Clicking "run now" while another run is active used to do nothing at all:
+  the API refused the request with a 409 whose message explains the conflict,
+  but the frontend discarded it. The refusal is now shown, with its message,
+  on desktop and phone. Each request reports its own outcome, so two
+  overlapping requests can no longer drop the first refusal on the floor
+  when the second succeeds.
 
 ### Removed
 
