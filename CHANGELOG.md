@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A hung backup no longer wedges every other backup indefinitely. A Syncoid
+  run hit a ZFS divergence and its subprocess never returned; nothing anywhere
+  bounded the wait, so the run held its executor slot for **four days**. The
+  run's row stayed `running` the whole time, and because admission refuses a
+  new run while a non-terminal row exists for the task's source, every
+  scheduled fire for that scope was denied. No backup ran from 2026-09-06 07:15
+  UTC until a human restarted the container on 2026-09-10 19:49 UTC. The
+  container healthcheck probes HTTP and stayed green throughout; Uptime Kuma
+  push monitors were the only thing that noticed.
+
+  Two independent gaps are closed.
+
+  **A per-run execution timeout.** `PULLBACKUP_RUN_TIMEOUT_SECONDS` (default
+  `86400`, one day) bounds how long a single run may execute. On expiry the
+  run's whole process group is terminated through the same graceful
+  TERM → bounded wait → KILL path cancellation uses — so the ssh, or the
+  `zfs send | zfs receive` pipeline, goes with it rather than being left
+  running against the destination — and the run is recorded as **failed**, not
+  cancelled: nobody asked for it and the backup did not happen. The error names
+  the bound that was exceeded, because the operator's next question is always
+  whether this was a wedge or a transfer that is legitimately longer than the
+  ceiling they configured. A day is deliberately generous: the same instance
+  has legitimate multi-hour pulls and an initial replication can run most of a
+  day, and a ceiling that kills real work would be a worse bug than the one it
+  fixes. Set it to `0` to wait forever, restoring the previous behaviour; a
+  negative value is refused at startup, since it is an already-expired deadline
+  that would kill every run the instant it spawned.
+
+  **A dead-execution watchdog.** Startup reconciliation already terminalized
+  orphaned rows correctly — it is what finally cleared the incident — but it
+  only runs at startup, so a wedged row blocks its source until somebody
+  restarts the application. The same reconciliation now runs continuously every
+  `PULLBACKUP_WATCHDOG_INTERVAL_SECONDS` (default `60`), failing any active row
+  that this process holds no execution for. Liveness is decided by the run-id
+  ownership map and nothing else: a pid would be unsound in both directions
+  (pids are recycled, and a run has no pid until after its exec), and elapsed
+  time cannot tell a wedge from a long transfer. Rows younger than five minutes
+  are never reclaimed, so the window between admitting a run and its execution
+  taking ownership is not a race. A sweep that raises is logged and the loop
+  continues, because a watchdog that switches itself off silently is the
+  failure it exists to prevent.
+
 - One long backup no longer stops every other backup. A single global
   concurrency slot was held for the whole duration of a transfer, so while a
   large archive pull was running, every other task was admitted, written

@@ -38,6 +38,14 @@ services:
       # serialize regardless of this value; set it to "1" for strictly one
       # transfer at a time. Below 1 is refused at startup.
       PULLBACKUP_MAX_CONCURRENT_RUNS: "3"
+      # Hard ceiling on one run's execution. A hung rsync/syncoid otherwise
+      # holds its slot forever and blocks every later run for that source.
+      # On expiry the process group is killed and the run is marked failed.
+      # "0" waits forever; a negative value is refused at startup.
+      PULLBACKUP_RUN_TIMEOUT_SECONDS: "86400"
+      # How often to reconcile active run rows against live executions and
+      # fail any this process is provably not running. Below 1 is refused.
+      PULLBACKUP_WATCHDOG_INTERVAL_SECONDS: "60"
       # Required. The password must be at least 32 characters.
       # The UI signs in with these at /login and then uses a session cookie;
       # the same values keep working as HTTP Basic for scripted access and for

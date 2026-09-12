@@ -44,6 +44,10 @@ def sqlite_engine(tmp_path, monkeypatch):
     # process-global state so one test's execution can never be visible — or
     # cancellable — from another.
     monkeypatch.setattr(runner, "_run_owners", {})
+    # The watchdog handle. Reset with the rest of the runner's process-global
+    # state so a test that starts one can never leave a live sweep attached to
+    # a closed loop, reclaiming another test's rows.
+    monkeypatch.setattr(runner, "_watchdog", None)
     runner.settings.log_dir.mkdir()
     return engine
 

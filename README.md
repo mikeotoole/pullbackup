@@ -210,6 +210,28 @@ replications into the same ZFS dataset or one of its descendants. A run that
 finds its destination busy waits and starts when it frees, rather than being
 skipped. Runs from the same source also remain serialized.
 
+### Stuck runs
+
+`PULLBACKUP_RUN_TIMEOUT_SECONDS` (default `86400`, one day) bounds how long a
+single run may execute. A backup subprocess can hang indefinitely — a dead
+network path, a `zfs receive` refusing a diverged incremental — and without a
+ceiling it holds its executor slot forever while its run row stays `running`,
+which blocks every subsequent run for that source. On expiry the run's whole
+process group is terminated (so the ssh or `zfs send | zfs receive` goes with
+it) and the run is recorded as **failed**, with the exceeded bound named in the
+error. Set it to `0` to wait forever if your initial replication genuinely runs
+longer than any ceiling you would set; a negative value is refused at startup.
+
+`PULLBACKUP_WATCHDOG_INTERVAL_SECONDS` (default `60`) is how often the runner
+reconciles active run rows against the executions it is actually running, and
+fails any row it provably is not executing. Startup recovery does the same
+thing, but only at startup — so without this a row left behind by a crashed
+execution blocks its source until someone restarts the container. Liveness is
+decided by run ownership, not by a pid (recycled, and not known until after the
+exec) and not by elapsed time (which cannot tell a wedge from a long transfer).
+A value below `1` is refused at startup: zero would spin rather than switch the
+watchdog off.
+
 Matrix and Uptime Kuma credentials are optional; omit their values to disable those integrations.
 
 ## Licence

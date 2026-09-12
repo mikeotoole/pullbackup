@@ -61,6 +61,44 @@ MIN_MAX_CONCURRENT_RUNS = 1
 # still serialize regardless of this number.
 DEFAULT_MAX_CONCURRENT_RUNS = 3
 
+# Smallest watchdog sweep interval the loader will accept.
+#
+# Zero or a negative value turns `asyncio.sleep(interval)` into a no-op and the
+# reconciliation loop into a busy loop that pins a core and hammers SQLite. It
+# does NOT switch the watchdog off, which is what an operator writing `0`
+# probably intends — so the value is refused rather than reinterpreted.
+MIN_WATCHDOG_INTERVAL_SECONDS = 1
+
+# How often the runner reconciles active rows against live executions.
+#
+# A minute is far below any cadence that matters (the tightest schedule on the
+# production instance is hourly) and far above anything that costs measurable
+# work: the sweep is one indexed SELECT over non-terminal rows.
+DEFAULT_WATCHDOG_INTERVAL_SECONDS = 60
+
+# How long a single run may execute before its process group is killed.
+#
+# INCIDENT 2026-09-06..10: a syncoid run hit a ZFS divergence, its subprocess
+# never returned, and the runner's `await proc.wait()` had no ceiling of any
+# kind. The row stayed `running` for four days; admission refuses a new run
+# while a non-terminal row exists for the source, so every scheduled fire for
+# that scope was denied. Four days of no backups, detected only by Uptime Kuma
+# push monitors, cleared only by a human restarting the container.
+#
+# 24 hours, not tighter. These are full-filesystem rsync pulls and ZFS
+# replications over a home uplink; the same instance has legitimate six-hour
+# transfers, and an initial replication of a large dataset can run most of a
+# day. A bound that kills real work would be a worse bug than the one it fixes,
+# because it would fail backups that were succeeding. A day is comfortably past
+# every transfer this deployment has ever completed while still turning a
+# four-day wedge into one missed window.
+#
+# Set to 0 to wait forever, restoring the pre-fix behaviour for a deployment
+# whose initial seed genuinely takes longer than a day. That is a deliberate,
+# documented choice; it is not the default, because the default has to be the
+# one that keeps backing up.
+DEFAULT_RUN_TIMEOUT_SECONDS = 24 * 60 * 60
+
 
 class ConfigurationError(RuntimeError):
     """Raised when the environment cannot be trusted to configure the app.
@@ -144,6 +182,20 @@ class Settings(BaseSettings):
     # leaves the semaphore with no permits and every run waits on it forever.
     # See _validate_max_concurrent_runs.
     max_concurrent_runs: int = DEFAULT_MAX_CONCURRENT_RUNS
+    # Hard ceiling on a single run's execution, in seconds. When a run exceeds
+    # it the runner kills its whole process group and records the run as
+    # failed, naming the bound in the error. 0 waits forever — the behaviour
+    # that let one hung syncoid hold the executor for four days, kept only as a
+    # documented escape hatch for a deployment whose initial seed needs it.
+    #
+    # Refused below zero at startup: a negative value reaches `wait_for` as an
+    # already-expired deadline, so every run would be killed the instant it
+    # spawned. See _validate_run_timeout_seconds.
+    run_timeout_seconds: int = DEFAULT_RUN_TIMEOUT_SECONDS
+    # How often the runner reconciles active rows against the executions it is
+    # actually running, reclaiming any row this process provably is not
+    # executing. Refused below MIN_WATCHDOG_INTERVAL_SECONDS at startup.
+    watchdog_interval_seconds: int = DEFAULT_WATCHDOG_INTERVAL_SECONDS
     log_retention_runs: int = 200
     http_basic_username: str = ""
     http_basic_password: str = ""
@@ -359,6 +411,48 @@ def _validate_max_concurrent_runs(limit: int) -> None:
 ENV_FILE = ".env"
 
 
+def _validate_run_timeout_seconds(timeout: int) -> None:
+    """Refuse a timeout that kills every run the moment it starts.
+
+    Rejected rather than clamped, matching the rest of this file. A negative
+    value is handed to `asyncio.wait_for` as an already-expired deadline, so
+    the process would terminate each subprocess immediately and record a
+    failure — a backup system that can never complete a backup, which is a
+    worse shape than the wedge this setting exists to bound.
+
+    Zero is accepted and means "wait forever". That is the pre-fix behaviour
+    and a legitimate choice for a deployment whose initial replication runs
+    longer than any sane ceiling; it is simply not the default.
+    """
+    if timeout < 0:
+        raise ConfigurationError(
+            f"{ENV_PREFIX}RUN_TIMEOUT_SECONDS must not be negative (got "
+            f"{timeout}). A negative bound is an already-expired deadline, so "
+            f"every run would be killed the instant it started. Use 0 to wait "
+            f"forever; the default is {DEFAULT_RUN_TIMEOUT_SECONDS}."
+        )
+
+
+def _validate_watchdog_interval_seconds(interval: int) -> None:
+    """Refuse a sweep interval that is a busy loop rather than a disabled one.
+
+    An operator writing 0 almost certainly means "switch the watchdog off", but
+    zero delay does the opposite: the reconciliation loop spins as fast as the
+    event loop allows, pinning a core and hammering SQLite. Rather than guess
+    at the intent or silently accept the pathological value, refuse it and name
+    the minimum.
+    """
+    if interval < MIN_WATCHDOG_INTERVAL_SECONDS:
+        raise ConfigurationError(
+            f"{ENV_PREFIX}WATCHDOG_INTERVAL_SECONDS must be at least "
+            f"{MIN_WATCHDOG_INTERVAL_SECONDS} (got {interval}). At zero or "
+            f"below the reconciliation loop spins without sleeping instead of "
+            f"switching off. The default is "
+            f"{DEFAULT_WATCHDOG_INTERVAL_SECONDS}."
+        )
+
+
+
 def load_settings(environ=None, env_file=ENV_FILE) -> Settings:
     """Build Settings, refusing an environment with orphaned legacy names.
 
@@ -410,6 +504,8 @@ def load_settings(environ=None, env_file=ENV_FILE) -> Settings:
     _validate_trusted_proxies(settings.trusted_proxies)
     _validate_auth_store_max_entries(settings.auth_store_max_entries)
     _validate_max_concurrent_runs(settings.max_concurrent_runs)
+    _validate_run_timeout_seconds(settings.run_timeout_seconds)
+    _validate_watchdog_interval_seconds(settings.watchdog_interval_seconds)
 
     mk = _MatrixKumaSettings(_env_file=env_file, **_matrix_kuma(environ))
     settings.matrix_homeserver = settings.matrix_homeserver or mk.MATRIX_HOMESERVER

@@ -23,10 +23,17 @@ async def lifespan(app: FastAPI):
     runner.reconcile_stale_runs()
     ssh.ensure_default_key()
     scheduler.start()
+    # Startup reconciliation above only helps on restart, which is why clearing
+    # the 2026-09 wedge needed a human. The watchdog is the same
+    # reconciliation running continuously, so a row this process is not
+    # actually executing stops blocking its source within a sweep instead of
+    # until somebody notices.
+    runner.start_watchdog()
     try:
         yield
     finally:
         scheduler.shutdown()
+        await runner.stop_watchdog()
         await runner.shutdown_execution_tasks()
 
 
