@@ -642,6 +642,55 @@ def test_an_unstarted_scheduler_flags_every_enabled_task(sqlite_engine, monkeypa
     assert [row.missed_schedule for row in rows] == [True, True]
 
 
+def test_a_stopped_scheduler_is_never_alive(monkeypatch):
+    """ai-review finding, PR #47, confirmed by measurement before fixing.
+
+    `shutdown()` does not clear the heartbeat, so a liveness answer derived
+    from heartbeat age alone reported `running: false, alive: true` for up to
+    three minutes after the scheduler stopped. That is a liveness endpoint
+    vouching for a scheduler that is definitively not running — the window an
+    operator restarting the service looks at, and an assertion that can only
+    ever be wrong, since a stopped scheduler is the one case where doubt is
+    unnecessary.
+
+    Both signals are now required: recent work AND a scheduler to have done
+    it. The heartbeat still carries the weight in the case that matters —
+    `running` stayed true for four days in September — but it can no longer
+    outvote a definite negative.
+    """
+    monkeypatch.setattr(scheduler, "_last_heartbeat", utcnow())
+    monkeypatch.setattr(scheduler, "_scheduler", _StoppedScheduler())
+
+    state = scheduler.liveness()
+
+    assert state["running"] is False
+    assert state["alive"] is False
+
+
+@pytest.mark.asyncio
+async def test_shutting_the_scheduler_down_stops_it_reporting_alive(sqlite_engine, monkeypatch):
+    """End to end through the real scheduler, not a stand-in."""
+    monkeypatch.setattr(scheduler, "_scheduler", None)
+    monkeypatch.setattr(scheduler, "_last_heartbeat", None)
+    create_source_tasks(sqlite_engine, count=1)
+    scheduler.start()
+    assert scheduler.liveness()["alive"] is True
+
+    scheduler.shutdown()
+    # `shutdown(wait=False)` needs one turn of the loop before APScheduler
+    # clears its own `running` flag — measured, and the reason the liveness
+    # answer is read after yielding rather than synchronously.
+    await asyncio.sleep(0.1)
+
+    state = scheduler.liveness()
+    assert state["running"] is False
+    assert state["alive"] is False
+    # The heartbeat itself is untouched and still fresh: this proves `alive`
+    # actually consults `running`, rather than passing because the stamp
+    # happened to age out.
+    assert state["heartbeat_age_seconds"] < 5
+
+
 def test_the_health_endpoint_reports_scheduler_liveness(monkeypatch):
     """Unauthenticated on purpose: the whole point is that something outside
     the app — a Kuma HTTP monitor, a compose healthcheck — can tell "the app
@@ -705,3 +754,9 @@ class _RunningScheduler:
 
     def get_job(self, job_id):  # pragma: no cover - shape only
         return None
+
+
+class _StoppedScheduler(_RunningScheduler):
+    """One that has been shut down, with its heartbeat left behind."""
+
+    running = False

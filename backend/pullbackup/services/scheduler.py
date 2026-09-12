@@ -157,14 +157,25 @@ def liveness() -> dict:
     blind spot. `running` is APScheduler's own flag — it says `start()` was
     called and `shutdown()` was not. `alive` is the heartbeat, which is the
     only one of the two that a wedged executor can falsify.
+
+    `alive` requires BOTH a recent beat and a scheduler to have produced it.
+    The asymmetry is deliberate and matches what each signal can actually
+    prove. A true `running` proves nothing — that is the September lesson, and
+    why the heartbeat exists. But a FALSE `running` is definite: `shutdown()`
+    leaves the last heartbeat behind, so age alone would report
+    `running: false, alive: true` for three minutes after the scheduler
+    stopped (measured; ai-review finding on PR #47). A liveness endpoint
+    vouching for a scheduler that is provably gone is wrong in the one case
+    where no inference is needed at all.
     """
     sched = _scheduler
     beat = _last_heartbeat
     age = None if beat is None else (utcnow() - beat).total_seconds()
     stale_after = HEARTBEAT_INTERVAL_SECONDS * STALE_HEARTBEAT_MULTIPLIER
+    running = bool(sched is not None and sched.running)
     return {
-        "running": bool(sched is not None and sched.running),
-        "alive": age is not None and age < stale_after,
+        "running": running,
+        "alive": running and age is not None and age < stale_after,
         "last_heartbeat": None if beat is None else beat.isoformat(),
         "heartbeat_age_seconds": age,
         "heartbeat_interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
