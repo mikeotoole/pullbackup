@@ -154,17 +154,15 @@ async def test_callback_of_a_replaced_job_after_a_cron_edit_creates_no_debt(
         scheduler.upsert_job(s.get(Task, task))
     old = scheduler.get_scheduler().get_job(scheduler._job_id(task))
 
-    # The old job's callback is already waiting when the edit's critical
-    # section (commit + upsert_job, as in `update_task`) begins.
+    # The edit (commit + upsert_job, as in `update_task`) completes; the old
+    # job's callback, already past APScheduler's dispatch, runs afterwards.
     clock.advance(minutes=10)
+    transfer.release()  # a failing assertion must not hang on a blocked child
     async with runner.lifecycle_mutation_lock():
-        callback = asyncio.create_task(old.func(*old.args))
-        await asyncio.sleep(0.1)
         _edit_cron(sqlite_engine, task, "30 3 * * *")
         with Session(sqlite_engine) as s:
             scheduler.upsert_job(s.get(Task, task))
-    await callback
-    transfer.release()  # a failing assertion must not hang on a blocked child
+    await old.func(*old.args)
     await drain()
 
     assert debt(sqlite_engine, task) is None
@@ -182,9 +180,8 @@ async def test_callback_from_before_a_disable_enable_cycle_creates_no_debt(
     old = scheduler.get_scheduler().get_job(scheduler._job_id(task))
 
     clock.advance(minutes=10)
+    transfer.release()
     async with runner.lifecycle_mutation_lock():
-        callback = asyncio.create_task(old.func(*old.args))
-        await asyncio.sleep(0.1)
         _set_enabled(sqlite_engine, task, False)
         with Session(sqlite_engine) as s:
             scheduler.upsert_job(s.get(Task, task))
@@ -193,8 +190,7 @@ async def test_callback_from_before_a_disable_enable_cycle_creates_no_debt(
         _set_enabled(sqlite_engine, task, True)
         with Session(sqlite_engine) as s:
             scheduler.upsert_job(s.get(Task, task))
-    await callback  # same task, same cron, but a dead generation
-    transfer.release()
+    await old.func(*old.args)  # same task, same cron, but a dead generation
     await drain()
 
     assert debt(sqlite_engine, task) is None
