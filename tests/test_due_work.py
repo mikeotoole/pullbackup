@@ -1048,3 +1048,115 @@ async def test_a_crash_between_edit_writes_exposes_only_complete_old_state(
         t1 = s.get(Task, task)
         assert (t1.cron, t1.enabled, t1.schedule_baseline_at) == old
     assert debt(sqlite_engine, task) is not None
+
+
+# ------------------------------------------------- review626: manual-run overlap
+
+
+async def _owed_with_manual_run_in_flight(engine, tmp_path, clock, transfer, status):
+    """Old debt (`status`) for `waiter` plus an operator's manual run in flight."""
+    clock.now = datetime.now(timezone.utc) - timedelta(minutes=1)
+    src = make_source(engine)
+    holder = make_task(engine, tmp_path, src, 0, clock.now)
+    waiter = make_task(engine, tmp_path, src, 1, clock.now)
+    await scheduler._execute(holder)
+    await until(lambda: transfer.started() == 1)
+    await scheduler._execute(waiter)
+    old = debt(engine, waiter)
+    assert old is not None and old.status == due.DUE
+    if status == due.RETRY:
+        with Session(engine) as s:
+            row = s.get(TaskDue, waiter)
+            row.status = due.RETRY
+            row.retry_at = clock.now + timedelta(hours=1)
+            s.add(row)
+            s.commit()
+    transfer.release()
+    await drain()
+    transfer.hold()
+    admission = await runner.admit_run(waiter)
+    assert admission.accepted
+    manual = asyncio.create_task(runner.execute_run(admission.run_id))
+    await until(lambda: transfer.started() == 2)
+    return waiter, admission.run_id, manual
+
+
+async def _later_occurrence(path, waiter, clock):
+    clock.advance(minutes=2)
+    if path == "tick":
+        await scheduler._execute(waiter)
+    else:
+        due.reconcile_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["tick", "reconcile"])
+@pytest.mark.parametrize("status", [due.DUE, due.RETRY])
+async def test_manual_success_pays_only_the_older_obligation_and_one_follow_up_remains(
+    sqlite_engine, tmp_path, clock, transfer, path, status
+):
+    waiter, _, manual = await _owed_with_manual_run_in_flight(
+        sqlite_engine, tmp_path, clock, transfer, status
+    )
+    await _later_occurrence(path, waiter, clock)
+    transfer.release()
+    await manual
+    await drain()
+    # Settlement is what pays a debt a manual run satisfied (dispatch calls it).
+    with Session(sqlite_engine) as s:
+        due.settle_all(s)
+    # The manual run satisfied the OLD obligation only. The occurrence that
+    # arrived while it ran is still promised.
+    row = debt(sqlite_engine, waiter)
+    assert row is not None, "manual success dropped the newer occurrence"
+    assert row.status == due.DUE and row.newer_due_at is None
+    # Repeated settles must not duplicate the follow-up...
+    with Session(sqlite_engine) as s:
+        due.settle_all(s)
+        due.settle_all(s)
+    assert debt(sqlite_engine, waiter) is not None
+    assert len(runs_for(sqlite_engine, waiter)) == 1
+    # ...and exactly ONE follow-up run happens, after which nothing is owed.
+    await pump_until(lambda: len(runs_for(sqlite_engine, waiter)) == 2, timeout=10)
+    await drain()
+    await dispatcher.dispatch_due()
+    await drain()
+    assert len(runs_for(sqlite_engine, waiter)) == 2
+    assert debt(sqlite_engine, waiter) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["tick", "reconcile"])
+async def test_failed_manual_attempt_does_not_erase_the_newer_occurrence(
+    sqlite_engine, tmp_path, clock, transfer, path
+):
+    waiter, _, manual = await _owed_with_manual_run_in_flight(
+        sqlite_engine, tmp_path, clock, transfer, due.DUE
+    )
+    await _later_occurrence(path, waiter, clock)
+    transfer.fail_with(23)
+    transfer.release()
+    await manual
+    await drain()
+    with Session(sqlite_engine) as s:
+        due.settle_all(s)
+    assert debt(sqlite_engine, waiter) is not None
+    assert len(runs_for(sqlite_engine, waiter)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["tick", "reconcile"])
+async def test_cancelled_manual_run_does_not_erase_the_newer_occurrence(
+    sqlite_engine, tmp_path, clock, transfer, path
+):
+    waiter, run_id, manual = await _owed_with_manual_run_in_flight(
+        sqlite_engine, tmp_path, clock, transfer, due.DUE
+    )
+    await _later_occurrence(path, waiter, clock)
+    result = await runner.cancel_run(run_id)
+    assert result.outcome == runner.CancelOutcome.cancelled
+    await asyncio.gather(manual, return_exceptions=True)
+    await drain()
+    with Session(sqlite_engine) as s:
+        due.settle_all(s)
+    assert debt(sqlite_engine, waiter) is not None
