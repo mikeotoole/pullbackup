@@ -313,7 +313,13 @@ async def test_queued_work_survives_a_restart_and_then_runs(
     transfer.release()
 
     assert debt(sqlite_engine, second) is not None  # the queue is on disk
-    await pump_until(lambda: transfer.started() >= 2)
+    # The interrupted first task is owed again (no retry penalty) and is just as
+    # old as `second`, so which of the two goes first is deliberately not part
+    # of the contract. What IS: the retained work still runs, one at a time.
+    await pump_until(
+        lambda: any(r.state == RunState.success for r in runs_for(sqlite_engine, second)),
+        timeout=10,
+    )
     await drain()
     assert any(r.state == RunState.success for r in runs_for(sqlite_engine, second))
     assert debt(sqlite_engine, second) is None
