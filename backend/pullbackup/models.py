@@ -131,4 +131,3 @@ class TaskDue(SQLModel, table=True):
     # An occurrence that arrived while a run was active: coalesced to ONE follow-up.
     newer_due_at: Optional[datetime] = None
     updated_at: datetime = Field(default_factory=utcnow)
-
