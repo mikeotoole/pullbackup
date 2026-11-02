@@ -146,6 +146,44 @@ def derive_baseline(session: Session, task: Task) -> datetime:
     return aware(task.created_at)
 
 
+def _active_run_started_at(session: Session, task_id: int) -> Optional[datetime]:
+    run = session.exec(
+        select(Run)
+        .where(Run.task_id == task_id, Run.state.in_([RunState.pending, RunState.running]))
+        .order_by(Run.started_at)
+    ).first()
+    return None if run is None else aware(run.started_at)
+
+
+def _note_occurrence_during_run(
+    session: Session, row: TaskDue, at: datetime, latest: Optional[datetime] = None
+) -> bool:
+    """Record an occurrence that arrives behind active work as ONE follow-up.
+
+    True when the occurrence is accounted for here (a follow-up is, or already
+    was, recorded). Dispatched debt always qualifies (follow-up = `at`, the
+    earliest). A due/retry/exhausted row qualifies when a run is active for the
+    task, which can only be an operator's manual run: it will pay the OLDER
+    obligation, and without a follow-up its success would delete the row and
+    drop a later occurrence. Occurrences at or before the run's start are
+    covered by that run; `latest` (the newest folded occurrence) decides
+    whether any came after it.
+    """
+    if row.status == DISPATCHED:
+        if row.newer_due_at is None:
+            row.newer_due_at = at
+        return True
+    if row.status == BLOCKED:
+        return False
+    started = _active_run_started_at(session, row.task_id)
+    newest = aware(latest or at)
+    if started is None or newest <= started:
+        return False
+    if row.newer_due_at is None:
+        row.newer_due_at = newest
+    return True
+
+
 def reconcile_task(session: Session, task: Task, now: Optional[datetime] = None) -> Optional[TaskDue]:
     """Fold every occurrence in (baseline, now] into the task's one obligation."""
     now = now or _now()
@@ -177,14 +215,13 @@ def reconcile_task(session: Session, task: Task, now: Optional[datetime] = None)
         return session.get(TaskDue, task.id)
 
     task.schedule_baseline_at = _latest_occurrence(task.cron, first, now)
+    latest = task.schedule_baseline_at
     session.add(task)
     row = session.get(TaskDue, task.id)
     if row is None:
         row = TaskDue(task_id=task.id, due_at=first, status=DUE, updated_at=now)
-    elif row.status == DISPATCHED:
-        # Active work: one explicit follow-up, never a pile.
-        if row.newer_due_at is None:
-            row.newer_due_at = first
+    elif _note_occurrence_during_run(session, row, first, latest):
+        pass  # recorded as the one follow-up behind the active run
     elif row.status == EXHAUSTED:
         # "until the next normal schedule": a fresh occurrence re-arms it.
         row.status, row.attempts, row.retry_at, row.last_error = DUE, 0, None, ""
@@ -231,8 +268,7 @@ def record_tick(task_id: int) -> None:
             session.add(task)
             session.add(row)
             session.commit()
-        elif row.status == DISPATCHED and row.newer_due_at is None:
-            row.newer_due_at = now
+        elif _note_occurrence_during_run(session, row, now):
             session.add(row)
             session.commit()
 
@@ -310,14 +346,30 @@ def settle_all(session: Session, now: Optional[datetime] = None) -> None:
         if row.status in (DUE, RETRY, EXHAUSTED):
             # A run that succeeded after the occurrence (a manual one) pays the debt.
             paid = session.exec(
-                select(Run).where(
+                select(Run)
+                .where(
                     Run.task_id == row.task_id,
                     Run.state == RunState.success,
                     Run.started_at >= row.due_at,
                 )
+                .order_by(Run.started_at.desc())
             ).first()
             if paid is not None:
-                _finish(session, row, row.newer_due_at, now)
+                # It pays what was owed when it STARTED. An occurrence that
+                # arrived after that stays promised as the one follow-up.
+                follow_up = aware(row.newer_due_at)
+                if follow_up is not None and follow_up <= aware(paid.started_at):
+                    follow_up = None
+                _finish(session, row, follow_up, now)
+            elif row.newer_due_at is not None and _active_run_started_at(session, row.task_id) is None:
+                # The manual run that deferred this occurrence ended without
+                # paying (failed/cancelled). The row is still owed and one
+                # future run covers both; keeping the marker would replay it.
+                row.newer_due_at = None
+                if row.status == EXHAUSTED:
+                    row.status, row.attempts, row.retry_at, row.last_error = DUE, 0, None, ""
+                row.updated_at = now
+                session.add(row)
     session.commit()
 
 
