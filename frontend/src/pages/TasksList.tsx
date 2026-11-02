@@ -9,6 +9,7 @@ import { nextSort, sortTasks, type SortColumn, type SortPreference } from "../li
 import { loadSort, saveSort } from "../lib/taskSortStorage";
 import { StatusPill } from "../components/StatusPill";
 import { MissedScheduleFlag } from "../components/MissedScheduleFlag";
+import { DueMarker, LastSuccess, dueView } from "../components/DueMarker";
 import { Toggle } from "../components/Toggle";
 import { BellIcon, CloneIcon, HistoryIcon, PencilIcon, PlayIcon, StopIcon, TrashIcon } from "../components/icons";
 
@@ -204,9 +205,15 @@ export function TasksList() {
                   <div className="flex flex-col gap-1 items-start">
                     <span>{t.enabled ? relTime(t.next_run) : "disabled"}</span>
                     <MissedScheduleFlag missed={t.missed_schedule} />
+                    <DueMarker task={t} />
                   </div>
                 </td>
-                <td className="px-4 py-3 text-muted text-xs">{lastRunTime(t.last_run_at)}</td>
+                <td className="px-4 py-3 text-muted text-xs">
+                  <div className="flex flex-col gap-0.5">
+                    <span>{lastRunTime(t.last_run_at)}</span>
+                    <span className="text-[11px]">last backup: <LastSuccess task={t} /></span>
+                  </div>
+                </td>
                 <td className="px-4 py-3"><Toggle checked={t.enabled} onChange={() => toggle.mutate(t)} /></td>
                 <td className="px-4 py-3">
                   {t.last_run_id ? (
@@ -270,7 +277,17 @@ export function TasksList() {
                 <dt className="text-muted">next run</dt>
                 <dd className="truncate">{t.enabled ? relTime(t.next_run) : "disabled"}</dd>
               </div>
+              <div className="min-w-0 col-span-2">
+                <dt className="text-muted">last backup</dt>
+                <dd className="truncate"><LastSuccess task={t} /></dd>
+              </div>
             </dl>
+
+            {dueView(t) && (
+              <div>
+                <DueMarker task={t} />
+              </div>
+            )}
 
             {/* Full width rather than inside the `next run` cell: the phone
                 card's two columns are ~160px each and the flag would be

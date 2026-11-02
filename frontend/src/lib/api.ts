@@ -60,6 +60,17 @@ export type Task = {
    * mode to avoid is a version skew that paints every row with a fault.
    */
   missed_schedule?: boolean;
+  // Retained due work (server: services/due.py). All optional so a response
+  // from an older server still typechecks and renders as "owes nothing".
+  queued?: boolean;
+  due_at?: string | null;
+  due_status?: "due" | "dispatched" | "retry" | "exhausted" | "blocked" | null;
+  wait_reason?: string | null;
+  retry_at?: string | null;
+  due_attempts?: number;
+  due_error?: string | null;
+  /** Finish time of the newest SUCCESSFUL run; a later failure never advances it. */
+  last_success_at?: string | null;
 };
 
 export type Run = {
