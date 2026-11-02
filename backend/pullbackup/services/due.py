@@ -248,6 +248,21 @@ def reconcile_all(now: Optional[datetime] = None) -> int:
     return owed
 
 
+# APScheduler can fire a hair before the trigger's own instant. A tick this
+# close to the NEXT occurrence is that occurrence; anything else is late for an
+# occurrence the watermark already holds.
+TICK_EARLY_TOLERANCE = timedelta(seconds=1)
+
+
+def _run_covers(session: Session, task_id: int, baseline: Optional[datetime]) -> bool:
+    """True when a run started at/after the watermark occurrence already paid it."""
+    if baseline is None:
+        return False
+    return session.exec(
+        select(Run.id).where(Run.task_id == task_id, Run.started_at >= baseline.replace(tzinfo=None))
+    ).first() is not None
+
+
 def record_tick(task_id: int) -> None:
     """A cron tick. Records the debt before anything can refuse it.
 
@@ -262,13 +277,29 @@ def record_tick(task_id: int) -> None:
         if task is None or not task.enabled:
             return
         row = reconcile_task(session, task, now)
-        if row is None:
-            row = TaskDue(task_id=task.id, due_at=now, status=DUE, updated_at=now)
-            task.schedule_baseline_at = max(aware(task.schedule_baseline_at) or now, now)
+        # Occurrence identity. reconcile_task has folded every occurrence <=
+        # now into the watermark (recording a follow-up behind active work
+        # itself), so the tick is either the echo of an occurrence it already
+        # accounts for (the usual late APScheduler callback: it fires after the
+        # periodic reconcile or startup already folded the same instant) or a
+        # hair-early tick for the NEXT occurrence. The callback's wallclock is
+        # not an occurrence and must not become a follow-up.
+        baseline = aware(task.schedule_baseline_at)
+        upcoming = None if baseline is None else next_occurrence(task.cron, baseline)
+        early = upcoming is not None and timedelta(0) <= upcoming - now <= TICK_EARLY_TOLERANCE
+        if early:
+            task.schedule_baseline_at = upcoming  # account for it exactly once
             session.add(task)
-            session.add(row)
+            if row is None:
+                row = TaskDue(task_id=task.id, due_at=now, status=DUE, updated_at=now)
+                session.add(row)
+            elif _note_occurrence_during_run(session, row, upcoming):
+                session.add(row)
             session.commit()
-        elif _note_occurrence_during_run(session, row, now):
+        elif row is None and not _run_covers(session, task_id, baseline):
+            row = TaskDue(task_id=task.id, due_at=now, status=DUE, updated_at=now)
+            task.schedule_baseline_at = max(baseline or now, now)
+            session.add(task)
             session.add(row)
             session.commit()
 

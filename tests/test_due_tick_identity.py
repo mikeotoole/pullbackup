@@ -54,6 +54,13 @@ async def _fold_and_dispatch(engine, tmp_path, clock, transfer, monkeypatch, zon
     await dispatcher.dispatch_due()
     await until(lambda: transfer.started() == 1)
     assert debt(engine, task).status == due.DISPATCHED
+    # Run rows are stamped by the real clock; pin the run to the injected one.
+    with Session(engine) as s:
+        for run in runs_for(engine, task):
+            run = s.get(Run, run.id)
+            run.started_at = ms(occ, 300)
+            s.add(run)
+        s.commit()
     return task
 
 
