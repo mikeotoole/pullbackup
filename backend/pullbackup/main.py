@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .api import auth, runs, sources, system, tasks
 from .db import init_db
 from .http_auth import HttpBasicAuthMiddleware, require_valid_configuration
-from .services import runner, scheduler, ssh
+from .services import dispatcher, due, runner, scheduler, ssh
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
@@ -23,6 +23,12 @@ async def lifespan(app: FastAPI):
     runner.reconcile_stale_runs()
     ssh.ensure_default_key()
     scheduler.start()
+    # Startup catch-up: rebuild the occurrences the process was down for from
+    # each task's persisted watermark, as ONE coalesced obligation per task.
+    # In-memory cron triggers (misfire_grace_time=60) cannot do this, which is
+    # why a restart over a due time used to drop it.
+    due.reconcile_all()
+    dispatcher.start_dispatcher()
     # Startup reconciliation above only helps on restart, which is why clearing
     # the 2026-09 wedge needed a human. The watchdog is the same
     # reconciliation running continuously, so a row this process is not
@@ -33,6 +39,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         scheduler.shutdown()
+        await dispatcher.stop_dispatcher()
         await runner.stop_watchdog()
         await runner.shutdown_execution_tasks()
 

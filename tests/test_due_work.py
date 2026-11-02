@@ -644,3 +644,153 @@ def test_init_db_adds_the_new_column_and_table_to_an_existing_database(tmp_path,
         tables = {r[0] for r in conn.exec_driver_sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert "schedule_baseline_at" in cols
     assert "taskdue" in tables
+
+
+# ---------------------------------------------------------------- slice C: wiring + API
+
+
+@pytest.mark.asyncio
+async def test_application_startup_catches_up_a_missed_occurrence_and_runs_it(
+    sqlite_engine, tmp_path, clock, transfer, monkeypatch
+):
+    from pullbackup import main
+
+    src = make_source(sqlite_engine)
+    task = make_task(
+        sqlite_engine, tmp_path, src, 0, clock.now, cron="0 * * * *",
+        schedule_baseline_at=clock.now - timedelta(hours=3),
+    )
+    monkeypatch.setattr(main, "init_db", lambda: None)
+    monkeypatch.setattr(main.ssh, "ensure_default_key", lambda: None)
+    transfer.release()
+    async with main.lifespan(main.app):
+        await until(lambda: any(r.state == RunState.success for r in runs_for(sqlite_engine, task)), timeout=10)
+        await drain()
+    assert len(runs_for(sqlite_engine, task)) == 1  # one catch-up, not three
+    assert debt(sqlite_engine, task) is None
+
+
+@pytest.mark.asyncio
+async def test_the_dispatcher_loop_starts_queued_work_when_a_run_finishes(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    src = make_source(sqlite_engine)
+    first = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    second = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
+    dispatcher.start_dispatcher()
+    try:
+        await scheduler._execute(first)
+        await until(lambda: transfer.started() == 1)
+        await scheduler._execute(second)
+        assert debt(sqlite_engine, second) is not None
+        transfer.release()
+        # No manual pump: the loop alone must carry it, woken by the finish.
+        await until(lambda: any(r.state == RunState.success for r in runs_for(sqlite_engine, second)), timeout=10)
+    finally:
+        await dispatcher.stop_dispatcher()
+        await drain()
+
+
+@pytest.mark.asyncio
+async def test_task_api_exposes_due_state_and_truthful_last_success(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    from pullbackup.api import tasks as tasks_api
+
+    src = make_source(sqlite_engine)
+    first = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    second = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
+    ok_at = datetime(2026, 11, 1, 3, 0, tzinfo=timezone.utc)
+    add_run(sqlite_engine, second, RunState.success, ok_at)
+    add_run(sqlite_engine, second, RunState.failed, ok_at + timedelta(hours=5), error="rsync exited 23")
+    await scheduler._execute(first)
+    await until(lambda: transfer.started() == 1)
+    await scheduler._execute(second)
+    with Session(sqlite_engine) as s:
+        row = tasks_api.get_task(second, s)
+        idle = tasks_api.get_task(first, s)
+    assert row.queued is True
+    assert row.due_status == "due"
+    assert row.wait_reason == "source_busy"
+    assert row.due_at is not None
+    assert row.last_success_at is not None
+    assert due.aware(row.last_success_at) == ok_at  # the later failure did not advance it
+    assert row.last_run_state == RunState.failed  # outcome stays separate
+    assert idle.queued is False and idle.wait_reason is None
+    transfer.release()
+    await drain()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_endpoint_lists_queued_tasks(sqlite_engine, tmp_path, clock, transfer):
+    from pullbackup.api import system as system_api
+
+    src = make_source(sqlite_engine)
+    first = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    second = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
+    await scheduler._execute(first)
+    await until(lambda: transfer.started() == 1)
+    await scheduler._execute(second)
+    with Session(sqlite_engine) as s:
+        body = system_api.scheduler_health(s)
+    assert body["queued_task_ids"] == [second]
+    assert body["queued_count"] == 1
+    transfer.release()
+    await drain()
+
+
+@pytest.mark.asyncio
+async def test_editing_the_schedule_through_the_api_rebaselines_and_drops_stale_debt(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    from pullbackup.api import tasks as tasks_api
+
+    src = make_source(sqlite_engine)
+    first = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    second = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
+    await scheduler._execute(first)
+    await until(lambda: transfer.started() == 1)
+    await scheduler._execute(second)
+    assert debt(sqlite_engine, second) is not None
+    with Session(sqlite_engine) as s:
+        t = s.get(Task, second)
+        data = tasks_api.TaskIn(**{k: getattr(t, k) for k in tasks_api.TaskIn.model_fields} | {"cron": "30 4 * * *"})
+        await tasks_api.update_task(second, data, s)
+    assert debt(sqlite_engine, second) is None
+    transfer.release()
+    await drain()
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_task_removes_its_obligation(sqlite_engine, tmp_path, clock, transfer):
+    from pullbackup.api import tasks as tasks_api
+
+    src = make_source(sqlite_engine)
+    first = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    second = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
+    await scheduler._execute(first)
+    await until(lambda: transfer.started() == 1)
+    await scheduler._execute(second)
+    with Session(sqlite_engine) as s:
+        await tasks_api.delete_task(second, s)
+    assert debt(sqlite_engine, second) is None
+    transfer.release()
+    await drain()
+
+
+@pytest.mark.asyncio
+async def test_manual_run_stays_honest_when_the_source_is_busy(sqlite_engine, tmp_path, clock, transfer):
+    from fastapi import BackgroundTasks, HTTPException
+    from pullbackup.api import tasks as tasks_api
+
+    src = make_source(sqlite_engine)
+    first = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    second = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
+    await scheduler._execute(first)
+    await until(lambda: transfer.started() == 1)
+    with Session(sqlite_engine) as s:
+        with pytest.raises(HTTPException) as err:
+            await tasks_api.run_now(second, BackgroundTasks(), s)
+    assert err.value.status_code == 409
+    transfer.release()
+    await drain()

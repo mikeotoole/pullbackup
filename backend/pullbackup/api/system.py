@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 Mike O'Toole
 from fastapi import APIRouter, Depends
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from ..config import settings
 from ..db import get_session
-from ..services import fs, scheduler, ssh
+from ..models import TaskDue
+from ..services import due, fs, scheduler, ssh
 from .. import __version__
 from . import tasks as tasks_api
 
@@ -68,10 +69,19 @@ def scheduler_health(session: Session = Depends(get_session)):
     missed = [
         row.id for row in tasks_api.list_tasks(session) if row.missed_schedule
     ]
+    queued = [
+        row.task_id
+        for row in session.exec(select(TaskDue)).all()
+        if row.status in (due.DUE, due.RETRY)
+    ]
     return {
         "scheduler": scheduler.liveness(),
         "missed_schedule_count": len(missed),
         "missed_schedule_task_ids": sorted(missed),
+        # Occurrences owed and not yet started: the debt a busy source,
+        # destination or capacity limit is holding back.
+        "queued_count": len(queued),
+        "queued_task_ids": sorted(queued),
     }
 
 
