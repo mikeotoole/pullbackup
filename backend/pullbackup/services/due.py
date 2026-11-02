@@ -103,7 +103,11 @@ def next_occurrence(cron: str, after: datetime) -> Optional[datetime]:
     if trigger is None:
         return None
     after = aware(after)
-    return trigger.get_next_fire_time(after, after)
+    fire = trigger.get_next_fire_time(after, after)
+    # Stored datetimes are naive UTC (SQLite drops tzinfo). The trigger answers
+    # in the scheduler's zone; persisting that wall time unconverted would
+    # shift every due time by the zone offset.
+    return None if fire is None else fire.astimezone(timezone.utc)
 
 
 MAX_OCCURRENCE_SCAN = 20000
@@ -295,7 +299,7 @@ def settle_all(session: Session, now: Optional[datetime] = None) -> None:
                 select(Run).where(
                     Run.task_id == row.task_id,
                     Run.state == RunState.success,
-                    Run.finished_at >= row.due_at,
+                    Run.started_at >= row.due_at,
                 )
             ).first()
             if paid is not None:
