@@ -16,8 +16,8 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..db import engine
-from ..models import Run, RunState, Source, Task, utcnow
-from . import fs
+from ..models import Run, RunState, Source, Task, TaskDue, utcnow
+from . import due, fs
 
 # concurrency control
 _global_sem = asyncio.Semaphore(settings.max_concurrent_runs)
@@ -210,18 +210,24 @@ async def admit_run(task_id: int) -> RunAdmission:
             if active_source:
                 return RunAdmission(accepted=False, reason="source_active")
 
-            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            run = Run(
-                task_id=task.id,
-                state=RunState.pending,
-                log_filename=f"task-{task.id}-{ts}.log",
-            )
-            session.add(run)
-            session.commit()
-            session.refresh(run)
-            if run.id is None:
-                raise RuntimeError("accepted run admission missing run id")
+            run = _new_pending_run(session, task)
             return RunAdmission(accepted=True, run_id=run.id)
+
+
+def _new_pending_run(session: Session, task: Task) -> Run:
+    """Create the pending row. The caller holds `_admission_lock`."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run = Run(
+        task_id=task.id,
+        state=RunState.pending,
+        log_filename=f"task-{task.id}-{ts}.log",
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    if run.id is None:
+        raise RuntimeError("accepted run admission missing run id")
+    return run
 
 
 def _source_lock(source_id: int) -> asyncio.Lock:
@@ -869,6 +875,14 @@ async def _execute_run(run_id: int) -> int:
             elif exit_code != 0:
                 run.error_message = f"rsync exited {exit_code}"
             session.add(run)
+            # Settle the due obligation in the SAME transaction that makes the
+            # run terminal, so a success clears the debt it satisfied
+            # atomically and a failure schedules its retry with it.
+            owed = session.exec(
+                select(TaskDue).where(TaskDue.run_id == run_id)
+            ).first()
+            if owed is not None:
+                due.apply_run_outcome(session, owed, run)
             session.commit()
 
         # fire-and-forget notifications
@@ -947,6 +961,9 @@ async def execute_run(run_id: int) -> int:
         if _run_owners.get(run_id) is owner:
             del _run_owners[run_id]
         owner.settled.set()
+        # A finished run frees its source, destination and slot: tell the pump.
+        from . import dispatcher
+        dispatcher.wake()
 
 
 # How long a cancellation waits for the execution to unwind. `_terminate_process_group`

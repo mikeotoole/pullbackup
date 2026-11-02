@@ -55,18 +55,16 @@ def get_scheduler() -> AsyncIOScheduler:
 
 
 async def _execute(task_id: int):
-    from .runner import admit_run, start_admitted_run
+    """A cron tick: write the occurrence down, then let the pump try to start it.
+
+    The occurrence is recorded BEFORE any admission question is asked. The old
+    body asked `admit_run` and returned on "no", which dropped the occurrence
+    for a whole cadence (incident 2026-11-02).
+    """
+    from . import dispatcher, due
     try:
-        admission = await admit_run(task_id)
-        if not admission.accepted:
-            log.info(
-                "scheduled run denied task_id=%s reason=%s",
-                task_id,
-                admission.reason,
-                extra={"task_id": task_id, "reason": admission.reason},
-            )
-            return
-        await start_admitted_run(admission.accepted_run_id())
+        due.record_tick(task_id)
+        await dispatcher.dispatch_due()
     except Exception:
         log.exception("scheduled task %s failed", task_id)
 

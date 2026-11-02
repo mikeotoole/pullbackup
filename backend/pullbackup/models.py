@@ -83,6 +83,12 @@ class Task(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
+    # Watermark of the cron occurrences already accounted for: everything at or
+    # before this instant has either been turned into due work or deliberately
+    # ignored (task created later, schedule edited, task disabled). NULL on rows
+    # that predate the column; services/due.py derives it from run history.
+    schedule_baseline_at: Optional[datetime] = None
+
     source: Optional[Source] = Relationship(back_populates="tasks")
     runs: list["Run"] = Relationship(back_populates="task")
 
@@ -100,3 +106,29 @@ class Run(SQLModel, table=True):
     log_filename: str = ""  # relative to settings.log_dir
 
     task: Optional[Task] = Relationship(back_populates="runs")
+
+
+class TaskDue(SQLModel, table=True):
+    """The one outstanding due-work obligation of a task.
+
+    A cron tick records this BEFORE any capacity or source admission, so a busy
+    source leaves a retained debt instead of dropping the occurrence. The task
+    id is the primary key: at most one obligation per task, and overdue
+    occurrences coalesce into it rather than replaying one by one.
+    """
+
+    task_id: int = Field(primary_key=True, foreign_key="task.id")
+    # EARLIEST unsatisfied occurrence; kept so scheduling is fair (oldest first).
+    due_at: datetime
+    # due | dispatched | retry | exhausted | blocked
+    status: str = "due"
+    # source_busy | destination_busy | capacity | task_active | None
+    wait_reason: Optional[str] = None
+    attempts: int = 0
+    retry_at: Optional[datetime] = None
+    last_error: str = ""
+    run_id: Optional[int] = None
+    # An occurrence that arrived while a run was active: coalesced to ONE follow-up.
+    newer_due_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=utcnow)
+

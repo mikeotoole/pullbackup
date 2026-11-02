@@ -12,7 +12,7 @@ from pullbackup import db, main
 from pullbackup.api import sources as sources_api
 from pullbackup.api import tasks as tasks_api
 from pullbackup.config import Settings
-from pullbackup.models import Run, RunState, Source, Task
+from pullbackup.models import Run, RunState, Source, Task, TaskDue
 from pullbackup.services import fs, runner, scheduler
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -675,6 +675,7 @@ async def test_pre_spawn_owner_failure_terminalizes_running_run(
             await runner.run_task(task.id)
     else:
         await scheduler._execute(task.id)
+        await asyncio.gather(*runner._execution_tasks, return_exceptions=True)
 
     with Session(sqlite_engine) as session:
         run = session.exec(select(Run).where(Run.task_id == task.id)).one()
@@ -705,10 +706,15 @@ async def test_accepted_admission_without_run_id_fails_before_execution(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_denied_scheduled_run_logs_reason_without_creating_a_run(
-    sqlite_engine, caplog
+async def test_busy_source_tick_creates_no_run_but_retains_the_occurrence(
+    sqlite_engine,
 ):
-    caplog.set_level(logging.INFO, logger=scheduler.__name__)
+    """Replaces the old "denied scheduled run is logged and dropped" test.
+
+    That test pinned the 2026-11-02 defect: the denied occurrence existed
+    nowhere afterwards. The tick must still create no run (the source is
+    busy), but it must now leave a durable obligation behind.
+    """
     first, second = create_source_tasks(sqlite_engine)
     admitted = await runner.admit_run(first.id)
 
@@ -716,16 +722,10 @@ async def test_denied_scheduled_run_logs_reason_without_creating_a_run(
 
     with Session(sqlite_engine) as session:
         runs = session.exec(select(Run)).all()
+        owed = session.get(TaskDue, second.id)
     assert [run.id for run in runs] == [admitted.run_id]
-    denial_records = [
-        record
-        for record in caplog.records
-        if record.getMessage()
-        == f"scheduled run denied task_id={second.id} reason=source_active"
-    ]
-    assert len(denial_records) == 1
-    assert denial_records[0].task_id == second.id
-    assert denial_records[0].reason == "source_active"
+    assert owed is not None
+    assert owed.wait_reason == "source_busy"
 
 
 def test_upserted_scheduler_job_has_bounded_overlap_and_misfires(sqlite_engine):
@@ -1519,6 +1519,7 @@ async def test_unsafe_persisted_rsync_destination_spawns_nothing(
             await runner.run_task(task.id)
     else:
         await scheduler._execute(task.id)
+        await asyncio.gather(*runner._execution_tasks, return_exceptions=True)
 
     assert not outside.exists()
     assert not outside.parent.exists()
