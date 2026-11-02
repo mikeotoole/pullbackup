@@ -151,6 +151,20 @@ def reconcile_task(session: Session, task: Task, now: Optional[datetime] = None)
     now = now or _now()
     if not task.enabled:
         return None
+    if _trigger(task.cron) is None:
+        # A persisted cron that cannot be parsed would otherwise produce no
+        # occurrences and no debt: a silent never-runs. Make it visible. The
+        # write boundary does not repair rows that already exist.
+        row = session.get(TaskDue, task.id)
+        if row is None:
+            row = TaskDue(task_id=int(task.id), due_at=now)
+        if row.status != BLOCKED or "cron" not in (row.last_error or ""):
+            row.status, row.wait_reason, row.retry_at = BLOCKED, None, None
+            row.last_error = f"invalid cron expression {task.cron!r}: edit the task to fix its schedule"[:500]
+            row.updated_at = now
+            session.add(row)
+            session.commit()
+        return row
     baseline = aware(task.schedule_baseline_at)
     if baseline is None:
         baseline = derive_baseline(session, task)
@@ -317,11 +331,12 @@ def on_task_edited(session: Session, task: Task, *, schedule_changed: bool, now:
     if schedule_changed or not task.enabled:
         task.schedule_baseline_at = now
         session.add(task)
-        if row is not None and row.status != DISPATCHED:
+        # Drop the old generation's obligation, DISPATCHED included. The
+        # in-flight run is left alone (never killed), but with the row gone its
+        # result has nothing to settle: it cannot retry, re-run, or satisfy debt
+        # owed under a different schedule. Fresh debt starts a new row.
+        if row is not None:
             session.delete(row)
-        elif row is not None:
-            row.newer_due_at = None
-            session.add(row)
     elif row is not None and row.status in (BLOCKED, EXHAUSTED):
         # Any other edit may have fixed what blocked it.
         row.status, row.attempts, row.retry_at, row.last_error = DUE, 0, None, ""
