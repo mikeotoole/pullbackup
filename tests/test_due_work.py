@@ -571,6 +571,7 @@ def test_disabled_and_edited_schedules_do_not_backfill(sqlite_engine, tmp_path, 
         s.add(t)
         s.commit()
         due.on_task_edited(s, t, schedule_changed=True)
+        s.commit()
     due.reconcile_all()
     assert debt(sqlite_engine, task) is None
     clock.advance(hours=1)
@@ -584,6 +585,7 @@ def test_disabled_and_edited_schedules_do_not_backfill(sqlite_engine, tmp_path, 
         s.add(t)
         s.commit()
         due.on_task_edited(s, t, schedule_changed=True)
+        s.commit()
     assert debt(sqlite_engine, task) is None
 
 
@@ -826,6 +828,7 @@ async def test_invalid_destination_is_blocked_until_the_task_is_edited(
     set_state(sqlite_engine, task, local_path=str(tmp_path / "fixed"))
     with Session(sqlite_engine) as s:
         due.on_task_edited(s, s.get(Task, task), schedule_changed=False)
+        s.commit()
     await pump_until(lambda: len(runs_for(sqlite_engine, task)) == 2)
     transfer.release()
     await drain()

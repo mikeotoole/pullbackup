@@ -325,7 +325,10 @@ def settle_all(session: Session, now: Optional[datetime] = None) -> None:
 
 
 def on_task_edited(session: Session, task: Task, *, schedule_changed: bool, now: Optional[datetime] = None) -> None:
-    """An edit establishes an explicit baseline; it never backfills."""
+    """An edit establishes an explicit baseline; it never backfills.
+
+    Flushes only: the caller commits the task write and this invalidation in
+    ONE transaction so a crash exposes the whole old or the whole new state."""
     now = now or _now()
     row = session.get(TaskDue, task.id)
     if schedule_changed or not task.enabled:
@@ -342,7 +345,7 @@ def on_task_edited(session: Session, task: Task, *, schedule_changed: bool, now:
         row.status, row.attempts, row.retry_at, row.last_error = DUE, 0, None, ""
         row.updated_at = now
         session.add(row)
-    session.commit()
+    session.flush()
 
 
 def forget_task(session: Session, task_id: int) -> None:

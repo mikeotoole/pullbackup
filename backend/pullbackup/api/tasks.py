@@ -310,16 +310,19 @@ async def update_task(task_id: int, data: TaskIn, session: Session = Depends(get
             setattr(t, k, v)
         t.updated_at = utcnow()
         session.add(t)
-        session.commit()
-        session.refresh(t)
+        session.flush()
         # An edit that changes WHEN the task runs (or turns it off/on) sets an
         # explicit baseline: nothing is backfilled for the old schedule or the
         # disabled interval, and debt owed under the old schedule is dropped.
+        # The task write and this invalidation commit in ONE transaction so a
+        # crash exposes either the whole old state or the whole new state.
         due.on_task_edited(
             session,
             t,
             schedule_changed=(t.cron != prev_cron or t.enabled != prev_enabled),
         )
+        session.commit()
+        session.refresh(t)
         dispatcher.wake()
         await _sync_kuma(t, session, prev_kuma=prev_kuma, prev_cron=prev_cron, prev_enabled=prev_enabled)
         scheduler.upsert_job(t)
