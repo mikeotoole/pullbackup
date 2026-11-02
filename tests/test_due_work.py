@@ -853,3 +853,127 @@ async def test_a_manual_success_pays_the_outstanding_debt(
     await drain()
     assert debt(sqlite_engine, waiter) is None
     assert len(runs_for(sqlite_engine, waiter)) == 1  # not run a second time
+
+
+# ---------------------------------------------------------------- review findings
+
+
+async def _edit(engine, task_id, **changes):
+    from pullbackup.api import tasks as tasks_api
+
+    with Session(engine) as s:
+        t = s.get(Task, task_id)
+        values = {k: getattr(t, k) for k in tasks_api.TaskIn.model_fields} | changes
+        await tasks_api.update_task(task_id, tasks_api.TaskIn(**values), s)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [{"cron": "30 4 * * *"}, {"enabled": False}])
+@pytest.mark.parametrize("outcome", ["fail", "success", "cancel"])
+async def test_a_schedule_edit_during_a_run_orphans_the_old_obligation(
+    sqlite_engine, tmp_path, clock, transfer, change, outcome
+):
+    """review623: the in-flight run's result must never settle, retry, or
+    re-run an obligation owed under the OLD schedule, and the run itself is
+    left alone (no kill)."""
+    clock.now = datetime.now(timezone.utc)
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    await scheduler._execute(task)
+    await until(lambda: transfer.started() == 1)
+    (run,) = runs_for(sqlite_engine, task)
+
+    await _edit(sqlite_engine, task, **change)
+    assert runner._run_owners.get(run.id) is not None  # not killed
+    assert debt(sqlite_engine, task) is None  # old generation dropped
+
+    if outcome == "cancel":
+        await runner.cancel_run(run.id)
+    else:
+        if outcome == "fail":
+            transfer.fail_with(23)
+        transfer.release()
+    await drain()
+    await dispatcher.dispatch_due()
+    await drain()
+    await dispatcher.dispatch_due()
+    await drain()
+
+    assert len(runs_for(sqlite_engine, task)) == 1  # old result never re-ran it
+    assert debt(sqlite_engine, task) is None  # and never became a retry
+
+
+@pytest.mark.asyncio
+async def test_a_late_old_result_cannot_settle_the_new_generation_debt(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    clock.now = datetime.now(timezone.utc)
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="* * * * *")
+    await scheduler._execute(task)
+    await until(lambda: transfer.started() == 1)
+    await _edit(sqlite_engine, task, cron="*/5 * * * *")
+    clock.advance(minutes=6)
+    due.reconcile_all()
+    fresh = debt(sqlite_engine, task)
+    assert fresh is not None and fresh.status == "due"  # new schedule's debt
+    transfer.fail_with(23)
+    transfer.release()
+    await drain()
+    after = debt(sqlite_engine, task)
+    assert after.status == "due"  # old failure did not make it a retry
+    assert after.attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_reenabling_after_a_disable_creates_fresh_debt_only_for_the_future(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="0 * * * *",
+                     schedule_baseline_at=clock.now - timedelta(minutes=1))
+    await _edit(sqlite_engine, task, enabled=False)
+    clock.advance(hours=5)
+    await _edit(sqlite_engine, task, enabled=True)
+    due.reconcile_all()
+    assert debt(sqlite_engine, task) is None
+    clock.advance(hours=1)
+    due.reconcile_all()
+    assert debt(sqlite_engine, task) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_persisted_cron_is_visibly_blocked_not_silent(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    from pullbackup.api import tasks as tasks_api
+
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="not a cron")
+    due.reconcile_all()
+    owed = debt(sqlite_engine, task)
+    assert owed is not None and owed.status == "blocked"
+    assert "cron" in owed.last_error.lower()
+    with Session(sqlite_engine) as s:
+        out = tasks_api.get_task(task, s)  # the row still serializes
+    assert out.due_status == "blocked" and "cron" in (out.due_error or "").lower()
+    # No hot loop and no run, however often the pump and reconcile go round.
+    for _ in range(3):
+        due.reconcile_all()
+        await dispatcher.dispatch_due()
+    assert runs_for(sqlite_engine, task) == []
+    assert transfer.started() == 0
+    assert debt(sqlite_engine, task).status == "blocked"
+
+    # An edit that repairs the cron resumes normal FUTURE scheduling.
+    await _edit(sqlite_engine, task, cron="0 3 * * *")
+    assert debt(sqlite_engine, task) is None
+    due.reconcile_all()
+    assert debt(sqlite_engine, task) is None  # nothing backfilled
+
+
+def test_a_disabled_task_with_invalid_cron_owes_nothing(sqlite_engine, tmp_path, clock):
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="not a cron", enabled=False)
+    due.reconcile_all()
+    assert debt(sqlite_engine, task) is None
