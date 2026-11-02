@@ -977,3 +977,71 @@ def test_a_disabled_task_with_invalid_cron_owes_nothing(sqlite_engine, tmp_path,
     task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="not a cron", enabled=False)
     due.reconcile_all()
     assert debt(sqlite_engine, task) is None
+
+
+@pytest.mark.asyncio
+async def test_a_crash_during_a_schedule_edit_leaves_the_complete_old_state(
+    sqlite_engine, tmp_path, clock, transfer, monkeypatch
+):
+    """review625: the task update and the baseline/debt invalidation commit in
+    ONE transaction. A crash after the helper wrote but before the commit must
+    expose the whole old state, never the new cron with the old watermark/debt."""
+    clock.now = datetime.now(timezone.utc)
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="* * * * *")
+    with Session(sqlite_engine) as s:
+        before = s.get(Task, task).schedule_baseline_at
+    clock.advance(minutes=2)
+    due.reconcile_all()
+    owed = debt(sqlite_engine, task)
+    assert owed is not None
+    with Session(sqlite_engine) as s:
+        baseline_with_debt = s.get(Task, task).schedule_baseline_at
+
+    real = due.on_task_edited
+
+    def write_then_crash(session, t, **kw):
+        real(session, t, **kw)
+        session.flush()
+        raise RuntimeError("simulated crash before commit")
+
+    monkeypatch.setattr(due, "on_task_edited", write_then_crash)
+    with pytest.raises(RuntimeError):
+        await _edit(sqlite_engine, task, cron="30 4 * * *")
+
+    with Session(sqlite_engine) as s:  # a fresh connection, as after a restart
+        t = s.get(Task, task)
+        assert t.cron == "* * * * *"
+        assert t.schedule_baseline_at == baseline_with_debt
+        assert s.get(TaskDue, task) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [{"cron": "30 4 * * *"}, {"enabled": False}])
+async def test_a_crash_between_edit_writes_exposes_only_complete_old_state(
+    sqlite_engine, tmp_path, clock, transfer, monkeypatch, change
+):
+    """review625: the task update and its baseline/debt invalidation commit in
+    ONE transaction. A fault after the task write must leave the whole old
+    state (old schedule, old watermark, old debt), never new schedule + old debt."""
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="0 * * * *",
+                     schedule_baseline_at=clock.now - timedelta(hours=2))
+    due.reconcile_all()
+    before = debt(sqlite_engine, task)
+    assert before is not None
+    with Session(sqlite_engine) as s:
+        t0 = s.get(Task, task)
+        old = (t0.cron, t0.enabled, t0.schedule_baseline_at)
+
+    def crash_after_writing(session, t, **k):
+        raise RuntimeError("crash between edit writes")
+
+    monkeypatch.setattr(due, "on_task_edited", crash_after_writing)
+    with pytest.raises(RuntimeError):
+        await _edit(sqlite_engine, task, **change)
+
+    with Session(sqlite_engine) as s:  # a fresh connection = what a restart sees
+        t1 = s.get(Task, task)
+        assert (t1.cron, t1.enabled, t1.schedule_baseline_at) == old
+    assert debt(sqlite_engine, task) is not None
