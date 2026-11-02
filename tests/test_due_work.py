@@ -794,3 +794,56 @@ async def test_manual_run_stays_honest_when_the_source_is_busy(sqlite_engine, tm
     assert err.value.status_code == 409
     transfer.release()
     await drain()
+
+
+@pytest.mark.asyncio
+async def test_invalid_destination_is_blocked_until_the_task_is_edited(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    src = make_source(sqlite_engine)
+    task = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    set_state(sqlite_engine, task, local_path=str(tmp_path.parent / "outside-root" / "x"))
+    await scheduler._execute(task)
+    await drain()
+    await dispatcher.dispatch_due()  # the pump settles the owner-failed run
+    owed = debt(sqlite_engine, task)
+    assert owed.status == "blocked"
+    assert "PathNotAllowed" in owed.last_error
+    # Never fakes success and never loops on the same failure.
+    for _ in range(3):
+        clock.advance(hours=2)
+        await dispatcher.dispatch_due()
+        await drain()
+    assert len(runs_for(sqlite_engine, task)) == 1
+    assert transfer.started() == 0
+    # An edit that fixes it re-arms the debt.
+    set_state(sqlite_engine, task, local_path=str(tmp_path / "fixed"))
+    with Session(sqlite_engine) as s:
+        due.on_task_edited(s, s.get(Task, task), schedule_changed=False)
+    await pump_until(lambda: len(runs_for(sqlite_engine, task)) == 2)
+    transfer.release()
+    await drain()
+
+
+@pytest.mark.asyncio
+async def test_a_manual_success_pays_the_outstanding_debt(
+    sqlite_engine, tmp_path, clock, transfer
+):
+    clock.now = datetime.now(timezone.utc) - timedelta(minutes=1)
+    src = make_source(sqlite_engine)
+    holder = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
+    waiter = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
+    await scheduler._execute(holder)
+    await until(lambda: transfer.started() == 1)
+    await scheduler._execute(waiter)
+    assert debt(sqlite_engine, waiter) is not None
+    transfer.release()
+    await drain()
+    # An operator runs it by hand before the pump gets to it.
+    admission = await runner.admit_run(waiter)
+    assert admission.accepted
+    await runner.execute_run(admission.run_id)
+    await dispatcher.dispatch_due()
+    await drain()
+    assert debt(sqlite_engine, waiter) is None
+    assert len(runs_for(sqlite_engine, waiter)) == 1  # not run a second time
