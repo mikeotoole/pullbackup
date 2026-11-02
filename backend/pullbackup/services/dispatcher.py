@@ -96,6 +96,15 @@ async def dispatch_due() -> list[int]:
             claimed_sources: set[int] = set()
             claimed_dests: list[tuple[str, ...]] = []
             for row in rows:
+                if row.status != due.DISPATCHED:
+                    owner = session.get(Task, row.task_id)
+                    if owner is not None and not owner.enabled:
+                        # Disabling stops NEW admission. Debt that outlived the
+                        # disable (a tick that committed after it) is stale:
+                        # drop it here, under the admission lock. A DISPATCHED
+                        # row is left to its in-flight run, which is never killed.
+                        session.delete(row)
+                        continue
                 if row.status == due.DISPATCHED or row.status in (due.EXHAUSTED, due.BLOCKED):
                     continue
                 retry_at = due.aware(row.retry_at)
