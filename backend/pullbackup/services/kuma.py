@@ -108,10 +108,14 @@ class KumaClient:
 
     async def set_active(self, monitor_id: int, active: bool) -> None:
         op = "resumeMonitor" if active else "pauseMonitor"
-        await self._call(op, monitor_id)
+        ack = await self._call(op, monitor_id)
+        if not ack or not ack.get("ok"):
+            raise RuntimeError(f"kuma {op} refused")
 
     async def delete(self, monitor_id: int) -> None:
-        await self._call("deleteMonitor", monitor_id)
+        ack = await self._call("deleteMonitor", monitor_id)
+        if not ack or not ack.get("ok"):
+            raise RuntimeError("kuma deleteMonitor refused")
 
 
 def client() -> Optional[KumaClient]:

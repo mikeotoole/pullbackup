@@ -394,6 +394,7 @@ async def _sync_kuma(t: Task, session: Session, prev_kuma: bool = False, prev_cr
     if not k:
         return
     interval = kuma.cron_interval_seconds(t.cron)
+    performed = False
     try:
         if t.kuma_enabled and not t.kuma_monitor_id:
             # The "pullback: " prefix is the CURRENT product identifier and is
@@ -407,15 +408,21 @@ async def _sync_kuma(t: Task, session: Session, prev_kuma: bool = False, prev_cr
             t.kuma_push_token = token
             session.add(t)
             session.commit()
+            performed = True
         elif t.kuma_enabled and t.kuma_monitor_id and (t.cron != prev_cron or t.enabled != prev_enabled):
             await k.update_interval(t.kuma_monitor_id, interval)
-            await k.set_active(t.kuma_monitor_id, t.enabled)
+            # Operator pause intent: only a real enabled-flag transition
+            # pauses/resumes; a cron edit leaves a Kuma-paused monitor paused.
+            if t.enabled != prev_enabled:
+                await k.set_active(t.kuma_monitor_id, t.enabled)
+            performed = True
         elif (not t.kuma_enabled) and t.kuma_monitor_id:
             await k.delete(t.kuma_monitor_id)
             t.kuma_monitor_id = None
             t.kuma_push_token = None
             session.add(t)
             session.commit()
+            performed = True
     except Exception as e:
         # Visible: recorded for GET /api/system/scheduler (`kuma_failures`)
         # until a later sync of this task succeeds (a task edit, or
@@ -424,6 +431,9 @@ async def _sync_kuma(t: Task, session: Session, prev_kuma: bool = False, prev_cr
         kuma_sync.record_sync_failure(t.id, e)
         log.warning("kuma sync for task %s failed: %s", t.id, kuma_sync.safe_error(e))
     else:
-        kuma_sync.clear_sync_failure(t.id)
+        # Clear only when a monitor operation actually ran and succeeded: a
+        # no-op edit (e.g. a rename) must not erase an unrepaired failure.
+        if performed:
+            kuma_sync.clear_sync_failure(t.id)
         if t.kuma_enabled and t.kuma_push_token:
             await kuma_sync.sync_task(t.id)

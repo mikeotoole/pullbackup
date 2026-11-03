@@ -488,3 +488,96 @@ async def test_reconcile_ignores_unlinked_and_disabled_kuma_tasks(sqlite_engine,
 def test_reconcile_main_refuses_without_kuma_configuration(monkeypatch, capsys):
     monkeypatch.setattr(kuma_sync.settings, "uptime_kuma_url", "")
     assert kuma_reconcile.main([]) == 2
+
+
+# ------------------------------------------- monitor lifecycle on the edit path
+
+
+class Boom:
+    """A client whose every method fails the test if it is called."""
+
+    def __getattr__(self, name):
+        async def _never(*_a, **_k):
+            raise AssertionError(f"unexpected kuma call: {name}")
+        return _never
+
+
+@pytest.mark.asyncio
+async def test_a_noop_edit_does_not_clear_an_unrepaired_configuration_failure(sqlite_engine, tmp_path, clock, monkeypatch):
+    tid = add_task(sqlite_engine, tmp_path, STALE_NOW)
+
+    class Refusing:
+        async def update_interval(self, *_):
+            raise RuntimeError("refused")
+
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: Refusing())
+    with Session(sqlite_engine) as s:
+        await tasks_api._sync_kuma(s.get(Task, tid), s, prev_cron="0 4 * * *", prev_enabled=True)
+    assert [(f["task_id"], f["kind"]) for f in kuma_sync.failures()] == [(tid, "configuration")]
+
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: Boom())
+    monkeypatch.setattr(kuma_sync, "push_heartbeat", Recorder())
+    with Session(sqlite_engine) as s:  # a rename: cron and enabled unchanged
+        t = s.get(Task, tid)
+        await tasks_api._sync_kuma(t, s, prev_cron=t.cron, prev_enabled=t.enabled)
+    assert [(f["task_id"], f["kind"]) for f in kuma_sync.failures()] == [(tid, "configuration")]
+
+
+@pytest.mark.asyncio
+async def test_a_cron_only_edit_never_resumes_or_pauses_the_monitor(sqlite_engine, tmp_path, clock, monkeypatch):
+    tid = add_task(sqlite_engine, tmp_path, STALE_NOW)  # task enabled; operator paused monitor in Kuma
+    calls = []
+
+    class Paused:
+        async def update_interval(self, mid, interval):
+            calls.append(("interval", mid))
+
+        async def set_active(self, mid, active):
+            calls.append(("active", mid, active))
+
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: Paused())
+    monkeypatch.setattr(kuma_sync, "push_heartbeat", Recorder())
+    with Session(sqlite_engine) as s:
+        await tasks_api._sync_kuma(s.get(Task, tid), s, prev_cron="0 4 * * *", prev_enabled=True)
+    assert calls == [("interval", 9)]
+    # An actual enabled-flag transition is the documented intent change.
+    with Session(sqlite_engine) as s:
+        await tasks_api._sync_kuma(s.get(Task, tid), s, prev_cron="0 3 * * *", prev_enabled=False)
+    assert ("active", 9, True) in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op,event", [("resume", "resumeMonitor"), ("pause", "pauseMonitor"), ("delete", "deleteMonitor")])
+async def test_refused_monitor_acks_raise_and_are_never_sync_success(sqlite_engine, tmp_path, clock, monkeypatch, op, event):
+    from pullbackup.services import kuma as kuma_mod
+
+    seen = []
+
+    async def refuse(self, ev, *a, **k):
+        seen.append(ev)
+        return {"ok": False, "msg": "no"}
+
+    monkeypatch.setattr(kuma_mod.KumaClient, "_call", refuse)
+    c = kuma_mod.KumaClient()
+    with pytest.raises(RuntimeError):
+        if op == "delete":
+            await c.delete(9)
+        else:
+            await c.set_active(9, op == "resume")
+    assert seen == [event]
+
+    # And through the sync path: refusal is recorded, identity is kept.
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: c)
+    tid = add_task(sqlite_engine, tmp_path, STALE_NOW, kuma=True)
+    with Session(sqlite_engine) as s:
+        t = s.get(Task, tid)
+        if op == "delete":
+            t.kuma_enabled = False
+            await tasks_api._sync_kuma(t, s)
+        else:
+            t.enabled = op == "resume"
+            await tasks_api._sync_kuma(t, s, prev_cron=t.cron, prev_enabled=not t.enabled)
+    assert [(f["task_id"], f["kind"]) for f in kuma_sync.failures()] == [(tid, "configuration")]
+    with Session(sqlite_engine) as s:
+        t = s.get(Task, tid)
+        assert t.kuma_monitor_id == 9 and t.kuma_push_token == TOKEN
