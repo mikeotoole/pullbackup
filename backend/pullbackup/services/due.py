@@ -103,11 +103,23 @@ def next_occurrence(cron: str, after: datetime) -> Optional[datetime]:
     if trigger is None:
         return None
     after = aware(after)
-    fire = trigger.get_next_fire_time(after, after)
-    # Stored datetimes are naive UTC (SQLite drops tzinfo). The trigger answers
-    # in the scheduler's zone; persisting that wall time unconverted would
-    # shift every due time by the zone offset.
-    return None if fire is None else fire.astimezone(timezone.utc)
+    # Hand the trigger `after` in ITS zone. A UTC `after` loses the fold: during
+    # the repeated fall-back hour the trigger re-resolves the wall time and can
+    # answer the very same instant (hourly after 05:00Z -> 05:00Z), which made
+    # every walk spin. A zone-local datetime carries the right UTC offset, so
+    # the answer is the same chained sequence APScheduler itself emits, with
+    # both occurrences of the repeated hour.
+    local = after.astimezone(settings.tzinfo)
+    fire = trigger.get_next_fire_time(local, local)
+    if fire is None:
+        return None
+    fire = fire.astimezone(timezone.utc)
+    if fire <= after:
+        # Never answer with a non-advancing instant: callers walk this
+        # sequence, so it would be an unbounded spin. Report no occurrence.
+        log.error("cron %r produced non-advancing occurrence %s after %s", cron, fire, after)
+        return None
+    return fire
 
 
 MAX_OCCURRENCE_SCAN = 20000

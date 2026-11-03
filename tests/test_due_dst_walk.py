@@ -148,7 +148,7 @@ def test_reconcile_through_the_fold_watermarks_the_actual_fire_not_now(
     with Session(sqlite_engine) as s:
         assert due.aware(s.get(Task, task).schedule_baseline_at) == datetime(2026, 11, 1, 6, 0, tzinfo=UTC)
     row = debt(sqlite_engine, task)
-    assert row is not None and due.aware(row.due_at) == datetime(2026, 11, 1, 5, 0, tzinfo=UTC)
+    assert row is not None and due.aware(row.due_at) == datetime(2026, 11, 1, 4, 0, tzinfo=UTC)  # earliest kept
     assert row.newer_due_at is None  # coalesced into the one obligation, no duplicate
 
 

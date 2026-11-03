@@ -22,6 +22,7 @@ import pytest
 from apscheduler.triggers.cron import CronTrigger
 from pullbackup import db
 from pullbackup.models import Run, RunState, Source, Task, TaskDue
+from pullbackup.models import utcnow as _real_utcnow
 from pullbackup.services import due, dispatcher, runner, scheduler
 from sqlmodel import Session, SQLModel, create_engine, select
 
@@ -48,6 +49,21 @@ def clock(monkeypatch):
     monkeypatch.setenv("TZ", "UTC")
     c = Clock(datetime(2026, 11, 2, 12, 0, 30, tzinfo=timezone.utc))
     monkeypatch.setattr(due, "_now", c)
+    # ONE clock for every timestamp the system under test writes. Run rows were
+    # stamped by the real clock (model default factory, runner start/finish), so
+    # a run started near a real minute boundary could look newer or older than
+    # an injected occurrence and the outcome flipped with wall-clock time
+    # (review run170 F2). Pin them all to the injected clock.
+    from pullbackup import models
+
+    monkeypatch.setattr(models, "utcnow", c)
+    for module in (due, runner, scheduler):
+        if hasattr(module, "utcnow"):
+            monkeypatch.setattr(module, "utcnow", c)
+    for model in (models.Run, models.Task, models.Source, models.TaskDue):
+        for field in model.model_fields.values():
+            if field.default_factory is _real_utcnow:
+                monkeypatch.setattr(field, "default_factory", c)
     return c
 
 
@@ -503,9 +519,6 @@ async def test_a_deliberate_cancel_is_not_retried(
 async def test_a_tick_during_active_work_coalesces_into_one_follow_up(
     sqlite_engine, tmp_path, clock, transfer
 ):
-    # Run rows are stamped with the REAL clock, so the injected one must start
-    # at real "now" or the first run would look newer than the follow-up tick.
-    clock.now = datetime.now(timezone.utc)
     src = make_source(sqlite_engine)
     task = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
     await scheduler._execute(task)
@@ -838,7 +851,7 @@ async def test_invalid_destination_is_blocked_until_the_task_is_edited(
 async def test_a_manual_success_pays_the_outstanding_debt(
     sqlite_engine, tmp_path, clock, transfer
 ):
-    clock.now = datetime.now(timezone.utc) - timedelta(minutes=1)
+    clock.now = clock.now - timedelta(minutes=1)
     src = make_source(sqlite_engine)
     holder = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
     waiter = make_task(sqlite_engine, tmp_path, src, 1, clock.now)
@@ -879,7 +892,6 @@ async def test_a_schedule_edit_during_a_run_orphans_the_old_obligation(
     """review623: the in-flight run's result must never settle, retry, or
     re-run an obligation owed under the OLD schedule, and the run itself is
     left alone (no kill)."""
-    clock.now = datetime.now(timezone.utc)
     src = make_source(sqlite_engine)
     task = make_task(sqlite_engine, tmp_path, src, 0, clock.now)
     await scheduler._execute(task)
@@ -910,7 +922,6 @@ async def test_a_schedule_edit_during_a_run_orphans_the_old_obligation(
 async def test_a_late_old_result_cannot_settle_the_new_generation_debt(
     sqlite_engine, tmp_path, clock, transfer
 ):
-    clock.now = datetime.now(timezone.utc)
     src = make_source(sqlite_engine)
     task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="* * * * *")
     await scheduler._execute(task)
@@ -989,7 +1000,6 @@ async def test_a_crash_during_a_schedule_edit_leaves_the_complete_old_state(
     """review625: the task update and the baseline/debt invalidation commit in
     ONE transaction. A crash after the helper wrote but before the commit must
     expose the whole old state, never the new cron with the old watermark/debt."""
-    clock.now = datetime.now(timezone.utc)
     src = make_source(sqlite_engine)
     task = make_task(sqlite_engine, tmp_path, src, 0, clock.now, cron="* * * * *")
     with Session(sqlite_engine) as s:
@@ -1055,7 +1065,7 @@ async def test_a_crash_between_edit_writes_exposes_only_complete_old_state(
 
 async def _owed_with_manual_run_in_flight(engine, tmp_path, clock, transfer, status):
     """Old debt (`status`) for `waiter` plus an operator's manual run in flight."""
-    clock.now = datetime.now(timezone.utc) - timedelta(minutes=1)
+    clock.now = clock.now - timedelta(minutes=1)
     src = make_source(engine)
     holder = make_task(engine, tmp_path, src, 0, clock.now)
     waiter = make_task(engine, tmp_path, src, 1, clock.now)

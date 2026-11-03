@@ -48,3 +48,36 @@ async def test_an_admitted_run_is_stamped_by_the_injected_clock(sqlite_engine, t
     assert admission.accepted
     (run,) = runs_for(sqlite_engine, task)
     assert due.aware(run.started_at) == clock.now
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second", [0, 30, 59, 59.7, 59.95])
+@pytest.mark.parametrize("path", ["tick", "reconcile"])
+@pytest.mark.parametrize("status", [due.DUE, due.RETRY])
+async def test_manual_success_keeps_one_follow_up_at_any_second_of_the_minute(
+    sqlite_engine, tmp_path, clock, transfer, path, status, second
+):
+    """The run170 flake, with the boundary injected instead of slept to."""
+    from test_due_work import (
+        _owed_with_manual_run_in_flight, _later_occurrence, debt, drain, pump_until, dispatcher,
+    )
+
+    clock.now = datetime(2026, 11, 2, 12, 1, tzinfo=UTC) + timedelta(seconds=second)
+    waiter, _, manual = await _owed_with_manual_run_in_flight(
+        sqlite_engine, tmp_path, clock, transfer, status
+    )
+    await _later_occurrence(path, waiter, clock)
+    transfer.release()
+    await manual
+    await drain()
+    with Session(sqlite_engine) as s:
+        due.settle_all(s)
+    row = debt(sqlite_engine, waiter)
+    assert row is not None, "manual success dropped the newer occurrence"
+    assert row.status == due.DUE and row.newer_due_at is None
+    await pump_until(lambda: len(runs_for(sqlite_engine, waiter)) == 2, timeout=10)
+    await drain()
+    await dispatcher.dispatch_due()
+    await drain()
+    assert len(runs_for(sqlite_engine, waiter)) == 2
+    assert debt(sqlite_engine, waiter) is None

@@ -14,7 +14,7 @@ work that is genuinely active.
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from pullbackup.models import Run, RunState, TaskDue, utcnow
+from pullbackup.models import Run, RunState, TaskDue
 from pullbackup.services import dispatcher, due, runner
 from sqlmodel import Session, select
 from test_due_work import (  # noqa: F401  (fixtures + helpers)
@@ -39,7 +39,7 @@ def _dispatched(engine, task, *, state, error=None, started_at=None, newer_due_a
             if started_at is not None:
                 r.started_at = started_at
             if state not in (RunState.pending, RunState.running):
-                r.finished_at = utcnow()
+                r.finished_at = due._now()
             s.add(r)
             s.flush()
             run_id = r.id
@@ -67,10 +67,6 @@ async def _watchdog(engine):
 
 
 def _setup(engine, tmp_path, clock):
-    # Run rows are stamped with the REAL clock (test_due_work.py documents the
-    # same constraint), so the injected one starts at real "now"; otherwise a
-    # later run would look newer than every occurrence and "pay" it.
-    clock.now = datetime.now(timezone.utc).replace(second=30, microsecond=0)
     src = make_source(engine)
     return make_task(engine, tmp_path, src, 0, clock.now, schedule_baseline_at=clock.now)
 
@@ -107,7 +103,7 @@ async def test_watchdog_reclaimed_run_occurrence_does_not_leave_phantom_followup
 ):
     task = _setup(sqlite_engine, tmp_path, clock)
     _dispatched(
-        sqlite_engine, task, state=RunState.running, started_at=utcnow() - timedelta(hours=2)
+        sqlite_engine, task, state=RunState.running, started_at=due._now() - timedelta(hours=2)
     )
     await _watchdog(sqlite_engine)  # the real watchdog sweep
     clock.advance(minutes=2)
