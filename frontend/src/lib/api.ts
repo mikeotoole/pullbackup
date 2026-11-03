@@ -71,6 +71,20 @@ export type Task = {
   due_error?: string | null;
   /** Finish time of the newest SUCCESSFUL run; a later failure never advances it. */
   last_success_at?: string | null;
+  /** The ONE successful-backup freshness projection (server: services/freshness.py). */
+  freshness?: Freshness | null;
+};
+
+export type FreshnessState = "fresh" | "not_yet_due" | "delayed" | "stale" | "disabled";
+export type Freshness = {
+  state: FreshnessState;
+  reason: string;
+  kuma_status: "up" | "down" | null;
+  occurrence_at: string | null;
+  deadline_at: string | null;
+  last_success_run_id: number | null;
+  last_success_started_at: string | null;
+  last_success_at: string | null;
 };
 
 export type Run = {

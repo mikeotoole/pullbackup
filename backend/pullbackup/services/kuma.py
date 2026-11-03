@@ -12,8 +12,7 @@ import string
 from typing import Optional
 import socketio
 from ..config import settings
-from . import cadence
-
+from . import cadence, freshness
 
 def _gen_push_token(n: int = 32) -> str:
     """Kuma push tokens are 32-char alphanumeric. The server does NOT generate one
@@ -25,15 +24,17 @@ log = logging.getLogger(__name__)
 
 
 def cron_interval_seconds(cron: str, default: int = 3600) -> int:
-    """Approximate the heartbeat interval from a cron expression.
+    """Push-monitor expiry for a cron expression.
 
-    Delegates to `cadence.cadence_seconds`, which is the single definition of
-    "how often does this task run". It used to be implemented here, and the
-    missed-schedule signal added a second implementation of the same question —
-    two answers that would drift silently, a push-monitor interval and a
-    lateness window quietly disagreeing about the same expression.
+    NOT the bare cadence any more. An expiry equal to the cadence flapped on
+    every normal run that took longer than the last one and on 25-hour DST
+    days. It is now `freshness.kuma_expiry_seconds`: cadence plus the largest
+    grace the shared projection can grant plus a DST margin, so the monitor is
+    only a dead-man backstop and the projection (pushed via `kuma_sync`) is
+    what says DOWN. `default` is kept for signature compatibility; an
+    unparseable cron takes the hourly fallback inside the cadence helper.
     """
-    return cadence.cadence_seconds(cron, default=default)
+    return freshness.kuma_expiry_seconds(cron)
 
 
 class KumaClient:
@@ -88,6 +89,12 @@ class KumaClient:
             raise RuntimeError(f"kuma editMonitor (set pushToken) failed: {edit}")
         return monitor_id, token
 
+    async def get_monitor(self, monitor_id: int) -> dict:
+        info = await self._call("getMonitor", monitor_id)
+        if not info or not info.get("ok", True) or not info.get("monitor"):
+            raise RuntimeError("kuma getMonitor returned no monitor")
+        return info["monitor"]
+
     async def update_interval(self, monitor_id: int, interval_s: int) -> None:
         info = await self._call("getMonitor", monitor_id)
         mon = info.get("monitor") or {}
@@ -95,7 +102,9 @@ class KumaClient:
         # editMonitor validates these the same way add does — re-assert if missing.
         mon["conditions"] = mon.get("conditions") or "[]"
         mon["accepted_statuscodes"] = mon.get("accepted_statuscodes") or ["200-299"]
-        await self._call("editMonitor", mon)
+        edit = await self._call("editMonitor", mon)
+        if not edit or not edit.get("ok"):
+            raise RuntimeError("kuma editMonitor (interval) refused")
 
     async def set_active(self, monitor_id: int, active: bool) -> None:
         op = "resumeMonitor" if active else "pauseMonitor"

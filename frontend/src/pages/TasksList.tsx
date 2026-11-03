@@ -10,6 +10,7 @@ import { loadSort, saveSort } from "../lib/taskSortStorage";
 import { StatusPill } from "../components/StatusPill";
 import { MissedScheduleFlag } from "../components/MissedScheduleFlag";
 import { DueMarker, LastSuccess, dueView } from "../components/DueMarker";
+import { FreshnessMarker, freshnessView } from "../components/FreshnessMarker";
 import { Toggle } from "../components/Toggle";
 import { BellIcon, CloneIcon, HistoryIcon, PencilIcon, PlayIcon, StopIcon, TrashIcon } from "../components/icons";
 
@@ -205,6 +206,7 @@ export function TasksList() {
                   <div className="flex flex-col gap-1 items-start">
                     <span>{t.enabled ? relTime(t.next_run) : "disabled"}</span>
                     <MissedScheduleFlag missed={t.missed_schedule} />
+                    <FreshnessMarker task={t} />
                     <DueMarker task={t} />
                   </div>
                 </td>
@@ -282,6 +284,12 @@ export function TasksList() {
                 <dd className="truncate"><LastSuccess task={t} /></dd>
               </div>
             </dl>
+
+            {freshnessView(t) && (
+              <div>
+                <FreshnessMarker task={t} />
+              </div>
+            )}
 
             {dueView(t) && (
               <div>

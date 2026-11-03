@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Uptime Kuma now reflects whether the newest *successful* backup is fresh,
+  not whether the last attempt worked or the scheduler is alive. One shared,
+  timezone-aware projection (`freshness` on each task, the task list marker,
+  and every Kuma push) replaces completion-only pushes whose expiry equalled
+  the cadence and flapped on ordinary runtime variation and DST. Failed or
+  cancelled attempts, retries and a healthy scheduler can no longer mask a
+  stale backup; a missed daily or weekly backup still goes DOWN within a
+  bounded grace. Push and monitor-edit failures are retried, recorded and shown
+  in `GET /api/system/scheduler`. `python -m pullbackup.tools.kuma_reconcile`
+  is a dry-run-first tool to align existing monitor intervals. See
+  `docs/freshness.md`.
+
 - A scheduled backup that found its source (or destination, or the global
   concurrency limit) busy was dropped and did not run until its *next* cron
   tick — on 2026-11-02 three daily tasks lost their day this way. The

@@ -35,6 +35,7 @@ def _ensure_columns() -> None:
             ("syncoid_force_full", "BOOLEAN NOT NULL DEFAULT 0"),
             ("prune_keep_hourly", "INTEGER"),
             ("schedule_baseline_at", "DATETIME"),
+            ("schedule_epoch_at", "DATETIME"),
         ],
     }
     with engine.connect() as conn:

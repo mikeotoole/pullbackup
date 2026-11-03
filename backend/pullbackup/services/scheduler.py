@@ -151,6 +151,20 @@ def start() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # Kuma freshness sweep: a SEPARATE job from the liveness heartbeat above.
+    # It re-asserts what the freshness projection says (up only while fresh,
+    # down only while stale, nothing otherwise) and retries failed deliveries.
+    # Its being scheduled says nothing about backup health.
+    from . import kuma_sync
+
+    sched.add_job(
+        kuma_sync.sweep_job,
+        trigger=IntervalTrigger(seconds=kuma_sync.SWEEP_INTERVAL_SECONDS),
+        id=kuma_sync.SWEEP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     sched.start()
     # Starting counts as a beat. Without it every deploy reports a dead
     # scheduler for the first interval, which would teach an operator to

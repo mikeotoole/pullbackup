@@ -88,6 +88,10 @@ class Task(SQLModel, table=True):
     # ignored (task created later, schedule edited, task disabled). NULL on rows
     # that predate the column; services/due.py derives it from run history.
     schedule_baseline_at: Optional[datetime] = None
+    # When the CURRENT schedule/enabled generation began (set by a schedule or
+    # enable edit; NULL means "since creation"). Freshness owes nothing for
+    # occurrences before it. See services/freshness.py.
+    schedule_epoch_at: Optional[datetime] = None
 
     source: Optional[Source] = Relationship(back_populates="tasks")
     runs: list["Run"] = Relationship(back_populates="task")

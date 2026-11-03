@@ -54,7 +54,7 @@ including the `--stats2` summary. Logs stream live while a run is in progress.
 ## Notifications (per task)
 
 - **Matrix** — checkbox; failures (and optionally successes) post to a configured room.
-- **Uptime Kuma** — checkbox; Pullbackup creates a Kuma push monitor for the task and updates the heartbeat interval whenever the cron changes. Disabled tasks → paused monitor. Deleted tasks → deleted monitor.
+- **Uptime Kuma** — checkbox; Pullbackup creates a Kuma push monitor for the task and updates the heartbeat interval whenever the cron changes. Disabled tasks → paused monitor. Deleted tasks → deleted monitor. The monitor reports *successful-backup freshness* (DOWN = a scheduled backup is overdue past a bounded grace with no success covering it), not HTTP or scheduler liveness: see [docs/freshness.md](docs/freshness.md).
 
 ## Deployment
 

@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..db import get_session
 from ..models import Run, RunState, Source, Task, TaskDue, utcnow
-from ..services import cadence, dispatcher, due, fs, kuma, scheduler
+from ..services import cadence, dispatcher, due, freshness, fs, kuma, kuma_sync, scheduler
 from ..services.runner import (
     admit_run,
     lifecycle_mutation_lock,
@@ -131,11 +131,29 @@ class TaskOut(TaskFields):
     due_attempts: int = 0
     due_error: Optional[str] = None
     last_success_at: Optional[datetime] = None
+    # The ONE successful-backup freshness projection (services/freshness.py),
+    # shared with the UI and the Kuma pushes. Never recomputed elsewhere.
+    freshness: Optional["FreshnessOut"] = None
 
 
-def _due_fields(session: Session, task_id: int) -> dict:
-    row = session.get(TaskDue, task_id)
-    out: dict = {"last_success_at": due.last_success_at(session, task_id)}
+class FreshnessOut(BaseModel):
+    state: str
+    reason: str
+    kuma_status: Optional[str] = None
+    occurrence_at: Optional[datetime] = None
+    deadline_at: Optional[datetime] = None
+    last_success_run_id: Optional[int] = None
+    last_success_started_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
+
+
+TaskOut.model_rebuild()
+
+
+def _due_fields(session: Session, t: Task) -> dict:
+    row = session.get(TaskDue, t.id)
+    f = freshness.project_task(session, t)
+    out: dict = {"last_success_at": f.last_success_at, "freshness": FreshnessOut(**f.as_dict())}
     if row is None:
         return out
     out.update(
@@ -157,7 +175,7 @@ def _to_out(t: Task, session: Session) -> TaskOut:
     next_run = scheduler.next_run_at(t)
     return TaskOut(
         **{k: getattr(t, k) for k in TaskFields.model_fields.keys()},
-        **_due_fields(session, t.id),
+        **_due_fields(session, t),
         id=t.id,
         kuma_monitor_id=t.kuma_monitor_id,
         kuma_push_token=t.kuma_push_token,
@@ -399,4 +417,13 @@ async def _sync_kuma(t: Task, session: Session, prev_kuma: bool = False, prev_cr
             session.add(t)
             session.commit()
     except Exception as e:
-        log.warning("kuma sync for task %s failed: %s", t.id, e)
+        # Visible: recorded for GET /api/system/scheduler (`kuma_failures`)
+        # until a later sync of this task succeeds (a task edit, or
+        # tools/kuma_reconcile). The error text is the exception class only
+        # (it can embed the monitor URL).
+        kuma_sync.record_sync_failure(t.id, e)
+        log.warning("kuma sync for task %s failed: %s", t.id, kuma_sync.safe_error(e))
+    else:
+        kuma_sync.clear_sync_failure(t.id)
+        if t.kuma_enabled and t.kuma_push_token:
+            await kuma_sync.sync_task(t.id)

@@ -45,7 +45,7 @@ from pullbackup import db, main
 from pullbackup.api import system as system_api
 from pullbackup.api import tasks as tasks_api
 from pullbackup.models import Run, RunState, Task, utcnow
-from pullbackup.services import cadence, kuma, scheduler
+from pullbackup.services import cadence, freshness, kuma, scheduler
 from sqlmodel import Session
 
 # Shared engine fixture and row factories.
@@ -104,13 +104,15 @@ def test_the_grace_window_has_a_ceiling_so_a_daily_task_is_flagged_in_time():
 def test_kuma_intervals_come_from_the_same_cadence_helper():
     """One definition of "how often does this task run", not two.
 
-    `kuma.cron_interval_seconds` sized push-monitor intervals long before this
-    card existed. Two independent implementations of the same question drift,
-    and the drift would be invisible: the monitor interval and the missed-
-    schedule window would quietly disagree about the same cron.
+    The push-monitor expiry is built FROM `cadence.cadence_seconds` (plus the
+    freshness grace), so it can never disagree with it about the cron. It is
+    deliberately larger than the bare cadence now: an expiry equal to the
+    cadence flapped on normal runtime variation (see tests/test_freshness.py).
     """
     for cron in (EVERY_MINUTE, HOURLY, DAILY, "bad cron"):
-        assert kuma.cron_interval_seconds(cron) == cadence.cadence_seconds(cron)
+        gap = cadence.cadence_seconds(cron)
+        assert kuma.cron_interval_seconds(cron) > gap
+        assert kuma.cron_interval_seconds(cron) == freshness.kuma_expiry_seconds(cron)
 
 
 # --------------------------------------------------------------------------

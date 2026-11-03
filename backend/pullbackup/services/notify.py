@@ -7,6 +7,7 @@ from sqlmodel import Session
 from ..config import settings
 from ..db import engine
 from ..models import Run, RunState, Task, Source
+from . import kuma_sync
 
 log = logging.getLogger(__name__)
 
@@ -29,18 +30,6 @@ async def _matrix_send(body: str) -> None:
             r.raise_for_status()
         except Exception as e:
             log.warning("matrix notify failed: %s", e)
-
-
-async def _kuma_push(token: str, status: str, msg: str = "") -> None:
-    if not settings.kuma_enabled or not token:
-        return
-    url = f"{settings.uptime_kuma_url.rstrip('/')}/api/push/{token}"
-    async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            r = await client.get(url, params={"status": status, "msg": msg, "ping": ""})
-            r.raise_for_status()
-        except Exception as e:
-            log.warning("kuma push failed: %s", e)
 
 
 async def dispatch(run_id: int) -> None:
@@ -71,9 +60,8 @@ async def dispatch(run_id: int) -> None:
     if task.notify_matrix and (not ok or task.notify_matrix_on_success):
         await _matrix_send(body)
 
-    # A cancellation is not a health signal in either direction: `down` would
-    # report a broken backup that is not broken, and `up` would claim one that
-    # never happened. Push nothing and let the monitor's own heartbeat window
-    # decide.
-    if task.kuma_enabled and task.kuma_push_token and not cancelled:
-        await _kuma_push(task.kuma_push_token, "up" if ok else "down", f"exit={run.exit_code}")
+    # Kuma is told what the freshness projection says about the last SUCCESSFUL
+    # backup, never this run's outcome: a failed or cancelled attempt cannot
+    # renew (or, by itself, break) a success. See services/kuma_sync.py.
+    if task.kuma_enabled and task.kuma_push_token:
+        await kuma_sync.sync_task(task.id)

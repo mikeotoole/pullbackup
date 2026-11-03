@@ -447,6 +447,7 @@ def on_task_edited(session: Session, task: Task, *, schedule_changed: bool, now:
     row = session.get(TaskDue, task.id)
     if schedule_changed or not task.enabled:
         task.schedule_baseline_at = now
+        task.schedule_epoch_at = now  # freshness: a new generation owes nothing before now
         session.add(task)
         # Drop the old generation's obligation, DISPATCHED included. The
         # in-flight run is left alone (never killed), but with the row gone its

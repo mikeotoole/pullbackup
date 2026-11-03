@@ -1136,7 +1136,7 @@ async def test_the_cancel_endpoint_does_not_report_a_non_stop_as_a_stop(
 @pytest.fixture
 def captured_notifications(monkeypatch, sqlite_engine):
     """Record what `dispatch` would send, without any network."""
-    from pullbackup.services import notify
+    from pullbackup.services import kuma_sync, notify
 
     matrix, kuma = [], []
 
@@ -1145,10 +1145,11 @@ def captured_notifications(monkeypatch, sqlite_engine):
 
     async def record_kuma(token, status, msg=""):
         kuma.append((token, status, msg))
+        return kuma_sync.PushResult(True, 1)
 
     monkeypatch.setattr(notify, "engine", sqlite_engine)
     monkeypatch.setattr(notify, "_matrix_send", record_matrix)
-    monkeypatch.setattr(notify, "_kuma_push", record_kuma)
+    monkeypatch.setattr(kuma_sync, "push_heartbeat", record_kuma)
     return notify, matrix, kuma
 
 
@@ -1212,7 +1213,13 @@ async def test_a_cancelled_run_does_not_push_kuma_down(
 async def test_a_genuinely_failed_run_still_reports_failure(
     sqlite_engine, captured_notifications
 ):
-    """The control. `cancelled` must be carved out without softening `failed`."""
+    """The control. `cancelled` must be carved out without softening `failed`.
+
+    Matrix still says FAILED. Kuma no longer hears `down` for one failed
+    attempt: with no overdue obligation the projection pushes nothing, because
+    the monitor reports successful-backup freshness (tests/test_kuma_sync.py
+    holds the stale case, where `down` IS pushed).
+    """
     notify, matrix, kuma = captured_notifications
     run_id = _notifying_task(sqlite_engine, RunState.failed)
 
@@ -1220,7 +1227,7 @@ async def test_a_genuinely_failed_run_still_reports_failure(
 
     assert len(matrix) == 1
     assert "FAILED" in matrix[0]
-    assert [status for _, status, _ in kuma] == ["down"]
+    assert kuma == []
 
 
 @pytest.mark.asyncio

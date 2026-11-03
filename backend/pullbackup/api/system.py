@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..db import get_session
 from ..models import TaskDue
-from ..services import due, fs, scheduler, ssh
+from ..services import due, fs, kuma_sync, scheduler, ssh
 from .. import __version__
 from . import tasks as tasks_api
 
@@ -74,6 +74,8 @@ def scheduler_health(session: Session = Depends(get_session)):
         for row in session.exec(select(TaskDue)).all()
         if row.status in (due.DUE, due.RETRY)
     ]
+    # Read off the same per-task projection the list and the Kuma pushes use.
+    stale = [row.id for row in tasks_api.list_tasks(session) if row.freshness and row.freshness.state == "stale"]
     return {
         "scheduler": scheduler.liveness(),
         "missed_schedule_count": len(missed),
@@ -82,6 +84,12 @@ def scheduler_health(session: Session = Depends(get_session)):
         # destination or capacity limit is holding back.
         "queued_count": len(queued),
         "queued_task_ids": sorted(queued),
+        # Successful-backup freshness is a different fact from scheduler
+        # liveness and from the queue: see docs/freshness.md.
+        "stale_count": len(stale),
+        "stale_task_ids": sorted(stale),
+        # Kuma deliveries/configuration that are failing right now.
+        "kuma_failures": kuma_sync.failures(),
     }
 
 
