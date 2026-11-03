@@ -10,8 +10,8 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..db import get_session
-from ..models import Run, RunState, Source, Task, utcnow
-from ..services import cadence, fs, kuma, scheduler
+from ..models import Run, RunState, Source, Task, TaskDue, utcnow
+from ..services import cadence, dispatcher, due, fs, kuma, scheduler
 from ..services.runner import (
     admit_run,
     lifecycle_mutation_lock,
@@ -117,6 +117,37 @@ class TaskOut(TaskFields):
     # separate field rather than a sixth RunState precisely so a row can say
     # both things at once. See services/cadence.py.
     missed_schedule: bool = False
+    # Retained due work, never stored on the task: see services/due.py.
+    #
+    # `queued` is true while an occurrence is owed and has not started (or is
+    # waiting to retry). `last_success_at` is the finish of the newest SUCCESS
+    # only, so a later failure cannot make a stale backup look fresh; the
+    # separate `last_run_*` fields keep describing the latest outcome.
+    queued: bool = False
+    due_at: Optional[datetime] = None
+    due_status: Optional[str] = None
+    wait_reason: Optional[str] = None
+    retry_at: Optional[datetime] = None
+    due_attempts: int = 0
+    due_error: Optional[str] = None
+    last_success_at: Optional[datetime] = None
+
+
+def _due_fields(session: Session, task_id: int) -> dict:
+    row = session.get(TaskDue, task_id)
+    out: dict = {"last_success_at": due.last_success_at(session, task_id)}
+    if row is None:
+        return out
+    out.update(
+        queued=row.status in (due.DUE, due.RETRY),
+        due_at=row.due_at,
+        due_status=row.status,
+        wait_reason=row.wait_reason,
+        retry_at=row.retry_at,
+        due_attempts=row.attempts,
+        due_error=row.last_error or None,
+    )
+    return out
 
 
 def _to_out(t: Task, session: Session) -> TaskOut:
@@ -126,6 +157,7 @@ def _to_out(t: Task, session: Session) -> TaskOut:
     next_run = scheduler.next_run_at(t)
     return TaskOut(
         **{k: getattr(t, k) for k in TaskFields.model_fields.keys()},
+        **_due_fields(session, t.id),
         id=t.id,
         kuma_monitor_id=t.kuma_monitor_id,
         kuma_push_token=t.kuma_push_token,
@@ -278,8 +310,20 @@ async def update_task(task_id: int, data: TaskIn, session: Session = Depends(get
             setattr(t, k, v)
         t.updated_at = utcnow()
         session.add(t)
+        session.flush()
+        # An edit that changes WHEN the task runs (or turns it off/on) sets an
+        # explicit baseline: nothing is backfilled for the old schedule or the
+        # disabled interval, and debt owed under the old schedule is dropped.
+        # The task write and this invalidation commit in ONE transaction so a
+        # crash exposes either the whole old state or the whole new state.
+        due.on_task_edited(
+            session,
+            t,
+            schedule_changed=(t.cron != prev_cron or t.enabled != prev_enabled),
+        )
         session.commit()
         session.refresh(t)
+        dispatcher.wake()
         await _sync_kuma(t, session, prev_kuma=prev_kuma, prev_cron=prev_cron, prev_enabled=prev_enabled)
         scheduler.upsert_job(t)
         return _to_out(t, session)
@@ -299,6 +343,7 @@ async def delete_task(task_id: int, session: Session = Depends(get_session)):
             except Exception as e:
                 log.warning("kuma delete failed: %s", e)
         scheduler.remove_job(task_id)
+        due.forget_task(session, task_id)
         # Delete child runs first: Run.task_id is NOT NULL with no ORM cascade, so deleting the
         # parent task alone would try to NULL the FK and raise IntegrityError (the silent-500 that
         # made the UI "do nothing"). Also clean up each run's on-disk log.

@@ -115,6 +115,37 @@ overdue. The same per-task signal appears per row in the UI as a
 `missed schedule` flag, which is independent of the last run's state: a task
 can have succeeded last time and not have run since.
 
+### Due work is retained, not dropped
+
+A scheduled occurrence is written down (one durable row per task) *before* the
+scheduler asks whether the source, destination or a concurrency slot is free. If
+something is busy the work waits and starts, oldest first, as soon as it can;
+it no longer waits for the next cron tick. Specifics:
+
+- One obligation per task. Occurrences missed while busy or while the app was
+  down coalesce into it (the earliest due time is kept for fairness); a tick
+  that arrives during a run becomes one follow-up, never a pile.
+- Source serialization, the global `PULLBACKUP_MAX_CONCURRENT_RUNS` limit and
+  destination exclusion (overlapping rsync paths, overlapping syncoid datasets)
+  are unchanged. A busy scope only holds back tasks that need that scope.
+- On startup and every minute the due set is rebuilt from each task's persisted
+  schedule watermark, using the same cron trigger the live job uses (so weekday
+  numbering and DST agree). A new task waits for its first due time; editing a
+  task's cron or enabling/disabling it sets a fresh baseline and never
+  backfills the old schedule or the disabled period.
+- A failed run is retried automatically with exponential backoff (1 minute,
+  doubling, capped at 1 hour). After 5 retries the task shows `retries
+  exhausted` until its next scheduled occurrence or a manual run. A task whose
+  stored configuration is invalid shows `blocked` until it is edited. An
+  operator cancellation is never retried.
+- `Run now` is unchanged: it is accepted, or refused with an explicit 409
+  when the task or its source is busy.
+- The task API and the task list expose `queued`, `due_status`, `wait_reason`,
+  `retry_at` and `last_success_at`. `last_success_at` is the finish time of the
+  last *successful* run only; a later failure never advances it, and it is
+  separate from the last run's outcome. `GET /api/system/scheduler` also lists
+  `queued_task_ids`.
+
 ## Local dev
 
 ```bash

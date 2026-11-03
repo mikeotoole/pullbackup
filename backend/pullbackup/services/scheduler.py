@@ -54,19 +54,36 @@ def get_scheduler() -> AsyncIOScheduler:
     return _scheduler
 
 
-async def _execute(task_id: int):
-    from .runner import admit_run, start_admitted_run
+_generations: dict[int, object] = {}
+
+
+def _new_generation(task_id: int) -> object:
+    token = object()
+    _generations[task_id] = token
+    return token
+
+
+async def _execute(task_id: int, generation: object = None):
+    """A cron tick: write the occurrence down, then let the pump try to start it.
+
+    The occurrence is recorded BEFORE any admission question is asked. The old
+    body asked `admit_run` and returned on "no", which dropped the occurrence
+    for a whole cadence (incident 2026-11-02).
+
+    The tick is recorded under the lifecycle lock, so it cannot interleave with
+    a task edit, and only if its job is still the registered one: a callback
+    from a job an edit/disable has since replaced is a dead generation and must
+    not resurrect debt under the new schedule. `generation=None` is a direct
+    call (tests, tooling) that carries no job identity and is not checked.
+    """
+    from . import dispatcher, due, runner
     try:
-        admission = await admit_run(task_id)
-        if not admission.accepted:
-            log.info(
-                "scheduled run denied task_id=%s reason=%s",
-                task_id,
-                admission.reason,
-                extra={"task_id": task_id, "reason": admission.reason},
-            )
-            return
-        await start_admitted_run(admission.accepted_run_id())
+        async with runner.lifecycle_mutation_lock():
+            if generation is not None and _generations.get(task_id) is not generation:
+                log.info("ignoring stale scheduled callback for task %s", task_id)
+                return
+            due.record_tick(task_id)
+        await dispatcher.dispatch_due()
     except Exception:
         log.exception("scheduled task %s failed", task_id)
 
@@ -75,6 +92,7 @@ def upsert_job(task: Task) -> None:
     sched = get_scheduler()
     job_id = _job_id(task.id)
     sched.remove_job(job_id) if sched.get_job(job_id) else None
+    _generations.pop(task.id, None)  # any callback of the old job is now dead
     if not task.enabled:
         return
     try:
@@ -85,7 +103,7 @@ def upsert_job(task: Task) -> None:
     sched.add_job(
         _execute,
         trigger=trigger,
-        args=[task.id],
+        args=[task.id, _new_generation(task.id)],
         id=job_id,
         replace_existing=True,
         max_instances=1,
@@ -96,6 +114,7 @@ def upsert_job(task: Task) -> None:
 
 def remove_job(task_id: int) -> None:
     sched = get_scheduler()
+    _generations.pop(task_id, None)
     if sched.get_job(_job_id(task_id)):
         sched.remove_job(_job_id(task_id))
 
@@ -110,7 +129,7 @@ def start() -> None:
                 sched.add_job(
                     _execute,
                     trigger=trigger,
-                    args=[t.id],
+                    args=[t.id, _new_generation(t.id)],
                     id=_job_id(t.id),
                     replace_existing=True,
                     max_instances=1,

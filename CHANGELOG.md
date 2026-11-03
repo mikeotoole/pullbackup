@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A scheduled backup that found its source (or destination, or the global
+  concurrency limit) busy was dropped and did not run until its *next* cron
+  tick — on 2026-11-02 three daily tasks lost their day this way. The
+  occurrence is now retained as one durable per-task obligation, started oldest
+  first as capacity frees, rebuilt after a restart, retried with capped backoff
+  on failure, and never retried after a deliberate cancel. The task list and
+  `GET /api/system/scheduler` show what is queued and why, and each task reports
+  the time of its last *successful* backup separately from its last run.
+
 ### Added
 
 - The task list now flags a task whose schedule has stopped firing, separately
