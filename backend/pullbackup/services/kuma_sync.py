@@ -75,6 +75,8 @@ class SyncOutcome:
 _outcomes: dict[int, SyncOutcome] = {}
 # task_id -> error text for failed monitor CONFIGURATION (create/edit/delete).
 _sync_failures: dict[int, str] = {}
+# task_id -> operations ("create"|"interval"|"active"|"delete") still owed.
+_pending_ops: dict[int, tuple[str, ...]] = {}
 
 
 def _engine():
@@ -198,12 +200,21 @@ async def sweep_job() -> None:
         log.exception("kuma freshness sweep failed")
 
 
-def record_sync_failure(task_id: int, error: BaseException) -> None:
+def record_sync_failure(task_id: int, error: BaseException, pending: tuple[str, ...] = ()) -> None:
+    """Record a failed configuration sync together with the operations that
+    did NOT complete (the failed one and any later one it blocked), so a later
+    sync retries exactly those and clears the failure only when they succeed."""
     _sync_failures[task_id] = safe_error(error)
+    _pending_ops[task_id] = tuple(pending)
+
+
+def pending_ops(task_id: int) -> tuple[str, ...]:
+    return _pending_ops.get(task_id, ())
 
 
 def clear_sync_failure(task_id: int) -> None:
     _sync_failures.pop(task_id, None)
+    _pending_ops.pop(task_id, None)
 
 
 def failures() -> list[dict]:

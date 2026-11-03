@@ -32,6 +32,7 @@ def env(clock, monkeypatch):
     monkeypatch.setenv("TZ", "America/Denver")
     monkeypatch.setattr(kuma_sync, "_outcomes", {})
     monkeypatch.setattr(kuma_sync, "_sync_failures", {})
+    monkeypatch.setattr(kuma_sync, "_pending_ops", {})
     s = kuma_sync.settings
     monkeypatch.setattr(s, "uptime_kuma_url", "http://kuma.invalid")
     monkeypatch.setattr(s, "uptime_kuma_username", "u")
@@ -581,3 +582,82 @@ async def test_refused_monitor_acks_raise_and_are_never_sync_success(sqlite_engi
     with Session(sqlite_engine) as s:
         t = s.get(Task, tid)
         assert t.kuma_monitor_id == 9 and t.kuma_push_token == TOKEN
+
+
+class Scripted:
+    """Stub monitor client: methods named in `refuse` raise; every call is logged."""
+
+    def __init__(self, refuse=()):
+        self.refuse = set(refuse)
+        self.calls = []
+
+    async def update_interval(self, mid, interval):
+        self.calls.append(("interval", mid))
+        if "interval" in self.refuse:
+            raise RuntimeError("refused")
+
+    async def set_active(self, mid, active):
+        self.calls.append(("active", mid, active))
+        if "active" in self.refuse:
+            raise RuntimeError("refused")
+
+
+def _fail_kinds():
+    return [(f["task_id"], f["kind"]) for f in kuma_sync.failures()]
+
+
+# (operation that is refused first, enabled flag before/after the first edit)
+PENDING_ROWS = [
+    pytest.param("active", True, False, id="refused-pause-on-disable"),
+    pytest.param("active", False, True, id="refused-resume-on-enable"),
+    pytest.param("interval", True, True, id="refused-interval-edit"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failing,prev_enabled,now_enabled", PENDING_ROWS)
+async def test_a_failed_operation_is_retried_and_only_its_success_clears_the_failure(
+        sqlite_engine, tmp_path, clock, monkeypatch, failing, prev_enabled, now_enabled):
+    tid = add_task(sqlite_engine, tmp_path, STALE_NOW, enabled=now_enabled)
+    first = Scripted(refuse={failing})
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: first)
+    monkeypatch.setattr(kuma_sync, "push_heartbeat", Recorder())
+    with Session(sqlite_engine) as s:
+        await tasks_api._sync_kuma(s.get(Task, tid), s, prev_cron="0 4 * * *", prev_enabled=prev_enabled)
+    assert _fail_kinds() == [(tid, "configuration")]
+
+    # A later cron-only edit (enabled unchanged) while the SAME op is still refused: failure persists.
+    still = Scripted(refuse={failing})
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: still)
+    with Session(sqlite_engine) as s:
+        t = s.get(Task, tid)
+        await tasks_api._sync_kuma(t, s, prev_cron="0 5 * * *", prev_enabled=t.enabled)
+    assert _fail_kinds() == [(tid, "configuration")]
+
+    # Once the monitor accepts it, the owed operation is re-attempted with the
+    # CURRENT desired state, and only then does the failure clear.
+    ok = Scripted()
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: ok)
+    with Session(sqlite_engine) as s:
+        t = s.get(Task, tid)
+        await tasks_api._sync_kuma(t, s, prev_cron="0 6 * * *", prev_enabled=t.enabled)
+    expected = ("active", 9, now_enabled) if failing == "active" else ("interval", 9)
+    assert expected in ok.calls
+    assert _fail_kinds() == []
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_successful_edit_does_not_clear_a_refused_interval(sqlite_engine, tmp_path, clock, monkeypatch):
+    tid = add_task(sqlite_engine, tmp_path, STALE_NOW)
+    monkeypatch.setattr(kuma_sync, "push_heartbeat", Recorder())
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: Scripted(refuse={"interval"}))
+    with Session(sqlite_engine) as s:
+        await tasks_api._sync_kuma(s.get(Task, tid), s, prev_cron="0 4 * * *", prev_enabled=True)
+    # Pause transition succeeds on set_active but interval is STILL refused.
+    mixed = Scripted(refuse={"interval"})
+    monkeypatch.setattr(tasks_api.kuma, "client", lambda: mixed)
+    with Session(sqlite_engine) as s:
+        t = s.get(Task, tid)
+        t.enabled = False
+        await tasks_api._sync_kuma(t, s, prev_cron=t.cron, prev_enabled=True)
+    assert _fail_kinds() == [(tid, "configuration")]

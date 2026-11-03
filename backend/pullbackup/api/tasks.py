@@ -409,12 +409,28 @@ async def _sync_kuma(t: Task, session: Session, prev_kuma: bool = False, prev_cr
             session.add(t)
             session.commit()
             performed = True
-        elif t.kuma_enabled and t.kuma_monitor_id and (t.cron != prev_cron or t.enabled != prev_enabled):
-            await k.update_interval(t.kuma_monitor_id, interval)
-            # Operator pause intent: only a real enabled-flag transition
-            # pauses/resumes; a cron edit leaves a Kuma-paused monitor paused.
+        elif t.kuma_enabled and t.kuma_monitor_id and (
+                t.cron != prev_cron or t.enabled != prev_enabled or kuma_sync.pending_ops(t.id)):
+            # Owed operations = this edit's plus any a previous sync left
+            # unfinished. Operator pause intent: only a real enabled-flag
+            # transition (or an owed, previously refused one) pauses/resumes;
+            # a plain cron edit leaves a Kuma-paused monitor paused.
+            owed = set(kuma_sync.pending_ops(t.id))
+            if t.cron != prev_cron or t.enabled != prev_enabled:
+                owed.add("interval")
             if t.enabled != prev_enabled:
-                await k.set_active(t.kuma_monitor_id, t.enabled)
+                owed.add("active")
+            todo = [op for op in ("interval", "active") if op in owed]
+            for i, op in enumerate(todo):
+                try:
+                    if op == "interval":
+                        await k.update_interval(t.kuma_monitor_id, interval)
+                    else:
+                        await k.set_active(t.kuma_monitor_id, t.enabled)
+                except Exception as e:
+                    kuma_sync.record_sync_failure(t.id, e, tuple(todo[i:]))
+                    log.warning("kuma sync for task %s failed: %s", t.id, kuma_sync.safe_error(e))
+                    return
             performed = True
         elif (not t.kuma_enabled) and t.kuma_monitor_id:
             await k.delete(t.kuma_monitor_id)
